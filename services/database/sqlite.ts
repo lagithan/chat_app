@@ -5,6 +5,7 @@ import { Message, Chat, User } from '@/types/chat';
 export class DatabaseService {
   private static instance: DatabaseService;
   public db: SQLite.SQLiteDatabase; // Make db public for direct access
+  private currentVersion = 2; // Increment this when schema changes
 
   private constructor() {
     this.db = SQLite.openDatabaseSync('chatapp.db');
@@ -19,10 +20,158 @@ export class DatabaseService {
   }
 
   private initDatabase() {
-    this.db.execSync(`
-      PRAGMA journal_mode = WAL;
+    try {
+      this.db.execSync('PRAGMA journal_mode = WAL;');
       
-      -- Users table
+      // Check current schema version
+      const version = this.getSchemaVersion();
+      
+      if (version < this.currentVersion) {
+        console.log(`Migrating database from version ${version} to ${this.currentVersion}`);
+        this.migrateDatabase(version);
+      } else {
+        // Create tables if they don't exist (fresh install)
+        this.createTables();
+      }
+      
+      // Update schema version
+      this.setSchemaVersion(this.currentVersion);
+      
+    } catch (error) {
+      console.error('Database initialization error:', error);
+      // If there's any error, recreate the database
+      this.recreateDatabase();
+    }
+  }
+
+  private getSchemaVersion(): number {
+    try {
+      // Create schema_version table if it doesn't exist
+      this.db.execSync(`
+        CREATE TABLE IF NOT EXISTS schema_version (
+          version INTEGER PRIMARY KEY
+        );
+      `);
+      
+      const result = this.db.getFirstSync('SELECT version FROM schema_version ORDER BY version DESC LIMIT 1');
+      return result?.version || 0;
+    } catch (error) {
+      console.error('Error getting schema version:', error);
+      return 0;
+    }
+  }
+
+  private setSchemaVersion(version: number): void {
+    try {
+      this.db.runSync('DELETE FROM schema_version');
+      this.db.runSync('INSERT INTO schema_version (version) VALUES (?)', [version]);
+    } catch (error) {
+      console.error('Error setting schema version:', error);
+    }
+  }
+
+  private migrateDatabase(fromVersion: number): void {
+    try {
+      if (fromVersion < 1) {
+        // Migration from version 0 to 1
+        this.createTables();
+      }
+      
+      if (fromVersion < 2) {
+        // Migration from version 1 to 2 - ensure proper column names
+        this.fixColumnNames();
+      }
+      
+      // Add more migrations here as needed
+      
+    } catch (error) {
+      console.error('Database migration error:', error);
+      // If migration fails, recreate database
+      this.recreateDatabase();
+    }
+  }
+
+  private fixColumnNames(): void {
+    try {
+      // Check if messages table exists and has correct columns
+      const tableInfo = this.db.getAllSync("PRAGMA table_info(messages)");
+      const columnNames = tableInfo.map((col: any) => col.name);
+      
+      if (!columnNames.includes('chat_id')) {
+        console.log('Recreating messages table with correct schema...');
+        
+        // Backup existing data if any
+        let existingMessages: any[] = [];
+        try {
+          existingMessages = this.db.getAllSync('SELECT * FROM messages');
+        } catch (e) {
+          // Table might not exist or be corrupted
+          console.log('No existing messages to backup');
+        }
+        
+        // Drop and recreate messages table
+        this.db.execSync('DROP TABLE IF EXISTS messages');
+        this.createMessagesTable();
+        
+        // Restore data if we had any
+        if (existingMessages.length > 0) {
+          console.log(`Restoring ${existingMessages.length} messages...`);
+          for (const msg of existingMessages) {
+            try {
+              this.db.runSync(
+                `INSERT INTO messages 
+                 (id, chat_id, sender_id, sender_name, content, timestamp, type, status, local_timestamp) 
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                [
+                  msg.id || `msg_${Date.now()}_${Math.random()}`,
+                  msg.chatId || msg.chat_id || 'unknown',
+                  msg.senderId || msg.sender_id || 'unknown',
+                  msg.senderName || msg.sender_name || 'Unknown',
+                  msg.content || '',
+                  msg.timestamp || new Date().toISOString(),
+                  msg.type || 'text',
+                  msg.status || 'sent',
+                  new Date().toISOString()
+                ]
+              );
+            } catch (e) {
+              console.error('Error restoring message:', e);
+            }
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Error fixing column names:', error);
+    }
+  }
+
+  private recreateDatabase(): void {
+    try {
+      console.log('Recreating database with fresh schema...');
+      
+      // Drop all tables
+      this.db.execSync(`
+        DROP TABLE IF EXISTS messages;
+        DROP TABLE IF EXISTS chats;
+        DROP TABLE IF EXISTS users;
+        DROP TABLE IF EXISTS push_tokens;
+        DROP TABLE IF EXISTS sync_queue;
+        DROP TABLE IF EXISTS schema_version;
+      `);
+      
+      // Create fresh tables
+      this.createTables();
+      this.setSchemaVersion(this.currentVersion);
+      
+    } catch (error) {
+      console.error('Error recreating database:', error);
+      throw error;
+    }
+  }
+
+  private createTables(): void {
+    // Users table
+    this.db.execSync(`
       CREATE TABLE IF NOT EXISTS users (
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL,
@@ -32,8 +181,10 @@ export class DatabaseService {
         last_seen DATETIME,
         is_online INTEGER DEFAULT 0
       );
+    `);
 
-      -- Chats table
+    // Chats table
+    this.db.execSync(`
       CREATE TABLE IF NOT EXISTS chats (
         id TEXT PRIMARY KEY,
         participants TEXT NOT NULL,
@@ -45,8 +196,39 @@ export class DatabaseService {
         is_active INTEGER DEFAULT 1,
         unread_count INTEGER DEFAULT 0
       );
+    `);
 
-      -- Messages table
+    // Messages table
+    this.createMessagesTable();
+
+    // Push tokens table
+    this.db.execSync(`
+      CREATE TABLE IF NOT EXISTS push_tokens (
+        user_id TEXT PRIMARY KEY,
+        token TEXT NOT NULL,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    // Sync queue table
+    this.db.execSync(`
+      CREATE TABLE IF NOT EXISTS sync_queue (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        operation TEXT NOT NULL,
+        table_name TEXT NOT NULL,
+        record_id TEXT NOT NULL,
+        data TEXT NOT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        retry_count INTEGER DEFAULT 0
+      );
+    `);
+
+    // Create indexes
+    this.createIndexes();
+  }
+
+  private createMessagesTable(): void {
+    this.db.execSync(`
       CREATE TABLE IF NOT EXISTS messages (
         id TEXT PRIMARY KEY,
         chat_id TEXT NOT NULL,
@@ -60,26 +242,11 @@ export class DatabaseService {
         local_timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (chat_id) REFERENCES chats (id)
       );
+    `);
+  }
 
-      -- Push tokens table
-      CREATE TABLE IF NOT EXISTS push_tokens (
-        user_id TEXT PRIMARY KEY,
-        token TEXT NOT NULL,
-        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-      );
-
-      -- Sync queue table for offline support
-      CREATE TABLE IF NOT EXISTS sync_queue (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        operation TEXT NOT NULL,
-        table_name TEXT NOT NULL,
-        record_id TEXT NOT NULL,
-        data TEXT NOT NULL,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        retry_count INTEGER DEFAULT 0
-      );
-
-      -- Create indexes for better performance
+  private createIndexes(): void {
+    this.db.execSync(`
       CREATE INDEX IF NOT EXISTS idx_messages_chat_id ON messages(chat_id);
       CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages(timestamp);
       CREATE INDEX IF NOT EXISTS idx_chats_updated_at ON chats(updated_at);
