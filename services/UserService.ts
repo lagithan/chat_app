@@ -1,7 +1,7 @@
 import * as ImagePicker from 'expo-image-picker';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Crypto from 'expo-crypto';
-import DatabaseService, { executeSqlAsync, Message } from './DatabaseService';
+import DatabaseService, { executeSqlAsync, Message } from './../services/database/sqlite';
 
 interface User {
   id: number;
@@ -233,9 +233,10 @@ class UserService {
     }
   }
 
-  async getSessionMessages(sessionId: string): Promise<Response<Message[]>> {
+  // Fixed method name to match DatabaseService
+  async getSessionMessages(chatId: string): Promise<Response<Message[]>> {
     try {
-      const messages = await DatabaseService.getMessages(sessionId);
+      const messages = await DatabaseService.getMessages(chatId);
       return { success: true, data: messages };
     } catch (error: any) {
       console.error('Error getting session messages:', error);

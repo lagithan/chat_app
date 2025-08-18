@@ -246,6 +246,7 @@ export default function QRTab() {
         statusBarTranslucent
       >
         <View style={styles.scannerContainer}>
+          {/* Camera View */}
           <CameraView
             style={styles.camera}
             facing="back"
@@ -257,21 +258,23 @@ export default function QRTab() {
                 handleQRScan(data);
               }
             }}
-          >
-            <View style={styles.overlay}>
-              <Text style={styles.scanText}>
-                {loading ? 'Processing...' : 'Scan QR code to join chat'}
-              </Text>
-              <View style={styles.scanArea} />
-              {loading && (
-                <View style={styles.loadingOverlay}>
-                  <ActivityIndicator size="large" color={Colors.textLight} />
-                  <Text style={styles.loadingText}>Joining chat...</Text>
-                </View>
-              )}
-            </View>
-          </CameraView>
+          />
           
+          {/* Overlay positioned outside camera */}
+          <View style={styles.overlay}>
+            <Text style={styles.scanText}>
+              {loading ? 'Processing...' : 'Scan QR code to join chat'}
+            </Text>
+            <View style={styles.scanArea} />
+            {loading && (
+              <View style={styles.loadingOverlay}>
+                <ActivityIndicator size="large" color={Colors.textLight} />
+                <Text style={styles.loadingText}>Joining chat...</Text>
+              </View>
+            )}
+          </View>
+          
+          {/* Close button */}
           <TouchableOpacity 
             style={styles.closeScanButton}
             onPress={() => {
@@ -377,12 +380,17 @@ const styles = StyleSheet.create({
   },
   scannerContainer: {
     flex: 1,
+    position: 'relative',
   },
   camera: {
     flex: 1,
   },
   overlay: {
-    flex: 1,
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
     backgroundColor: 'rgba(0,0,0,0.6)',
     justifyContent: 'center',
     alignItems: 'center',

@@ -4,7 +4,7 @@ import { Message, Chat, User } from '@/types/chat';
 
 export class DatabaseService {
   private static instance: DatabaseService;
-  private db: SQLite.SQLiteDatabase;
+  public db: SQLite.SQLiteDatabase; // Make db public for direct access
 
   private constructor() {
     this.db = SQLite.openDatabaseSync('chatapp.db');

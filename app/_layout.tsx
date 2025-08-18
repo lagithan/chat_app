@@ -5,9 +5,7 @@ import { StatusBar } from 'expo-status-bar';
 import { View, ActivityIndicator, Text } from 'react-native';
 import { Colors } from '@/constants/Colors';
 import { DatabaseService } from '@/services/database/sqlite';
-import { initializeUser, getCurrentUserProfile } from '@/services/firebase/config';
-import { NotificationService } from '@/services/notifications/push';
-import { syncService } from '@/services/sync/syncService';
+import { initializeUser } from '@/services/firebase/config';
 import { useNotifications } from '@/hooks/useNotifications';
 
 export default function RootLayout() {
@@ -35,21 +33,16 @@ export default function RootLayout() {
       console.log('Firebase user initialized');
 
       // Request notification permissions
-      const permissionGranted = await requestPermissions();
-      if (permissionGranted) {
-        console.log('Notification permissions granted');
-      } else {
-        console.log('Notification permissions denied');
+      try {
+        const permissionGranted = await requestPermissions();
+        if (permissionGranted) {
+          console.log('Notification permissions granted');
+        } else {
+          console.log('Notification permissions denied');
+        }
+      } catch (error) {
+        console.log('Notification setup error (continuing anyway):', error);
       }
-
-      // Initialize sync service
-      const sync = syncService;
-      console.log('Sync service initialized');
-
-      // Set up periodic sync (in a real app, you might use background tasks)
-      setInterval(() => {
-        sync.backgroundSync();
-      }, 5 * 60 * 1000); // Every 5 minutes
 
       setIsInitialized(true);
       console.log('App initialization completed');
