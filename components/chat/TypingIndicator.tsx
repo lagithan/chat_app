@@ -1,3 +1,4 @@
+// components/chat/TypingIndicator.tsx
 import React, { useEffect, useRef } from 'react';
 import { View, Text, StyleSheet, Animated } from 'react-native';
 import { Colors } from '@/constants/Colors';
@@ -7,57 +8,72 @@ interface TypingIndicatorProps {
   userName?: string;
 }
 
-export default function TypingIndicator({ visible, userName = 'Someone' }: TypingIndicatorProps) {
+const TypingIndicator: React.FC<TypingIndicatorProps> = ({ visible, userName = 'Someone' }) => {
   const dot1 = useRef(new Animated.Value(0)).current;
   const dot2 = useRef(new Animated.Value(0)).current;
   const dot3 = useRef(new Animated.Value(0)).current;
+  const containerOpacity = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
     if (visible) {
-      startAnimation();
+      // Show the container
+      Animated.timing(containerOpacity, {
+        toValue: 1,
+        duration: 200,
+        useNativeDriver: true,
+      }).start();
+
+      // Start the dot animations
+      const animateDot = (dot: Animated.Value, delay: number) => {
+        return Animated.loop(
+          Animated.sequence([
+            Animated.delay(delay),
+            Animated.timing(dot, {
+              toValue: 1,
+              duration: 600,
+              useNativeDriver: true,
+            }),
+            Animated.timing(dot, {
+              toValue: 0,
+              duration: 600,
+              useNativeDriver: true,
+            }),
+          ])
+        );
+      };
+
+      const animation1 = animateDot(dot1, 0);
+      const animation2 = animateDot(dot2, 200);
+      const animation3 = animateDot(dot3, 400);
+
+      animation1.start();
+      animation2.start();
+      animation3.start();
+
+      return () => {
+        animation1.stop();
+        animation2.stop();
+        animation3.stop();
+      };
     } else {
-      stopAnimation();
+      // Hide the container
+      Animated.timing(containerOpacity, {
+        toValue: 0,
+        duration: 200,
+        useNativeDriver: true,
+      }).start();
+      
+      // Reset dots
+      dot1.setValue(0);
+      dot2.setValue(0);
+      dot3.setValue(0);
     }
   }, [visible]);
-
-  const startAnimation = () => {
-    const animateDot = (dot: Animated.Value, delay: number) => {
-      return Animated.sequence([
-        Animated.delay(delay),
-        Animated.timing(dot, {
-          toValue: 1,
-          duration: 400,
-          useNativeDriver: true,
-        }),
-        Animated.timing(dot, {
-          toValue: 0,
-          duration: 400,
-          useNativeDriver: true,
-        }),
-      ]);
-    };
-
-    const animation = Animated.loop(
-      Animated.parallel([
-        animateDot(dot1, 0),
-        animateDot(dot2, 200),
-        animateDot(dot3, 400),
-      ])
-    );
-
-    animation.start();
-  };
-
-  const stopAnimation = () => {
-    dot1.setValue(0);
-    dot2.setValue(0);
-    dot3.setValue(0);
-  };
 
   if (!visible) return null;
 
   return (
-    <View style={styles.container}>
+    <Animated.View style={[styles.container, { opacity: containerOpacity }]}>
       <View style={styles.bubble}>
         <Text style={styles.text}>{userName} is typing</Text>
         <View style={styles.dotsContainer}>
@@ -111,23 +127,24 @@ export default function TypingIndicator({ visible, userName = 'Someone' }: Typin
           />
         </View>
       </View>
-    </View>
+    </Animated.View>
   );
-}
+};
 
 const styles = StyleSheet.create({
   container: {
     paddingHorizontal: 16,
-    paddingVertical: 4,
+    paddingVertical: 8,
+    alignItems: 'flex-start',
   },
   bubble: {
-    flexDirection: 'row',
-    alignItems: 'center',
     backgroundColor: Colors.otherMessage,
     borderRadius: 18,
+    borderBottomLeftRadius: 4,
     paddingHorizontal: 12,
     paddingVertical: 8,
-    alignSelf: 'flex-start',
+    flexDirection: 'row',
+    alignItems: 'center',
     maxWidth: '80%',
   },
   text: {
@@ -143,7 +160,9 @@ const styles = StyleSheet.create({
     width: 4,
     height: 4,
     borderRadius: 2,
-    backgroundColor: Colors.typing,
+    backgroundColor: Colors.textSecondary,
     marginHorizontal: 1,
   },
 });
+
+export default TypingIndicator;

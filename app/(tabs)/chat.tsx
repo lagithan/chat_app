@@ -1,3 +1,4 @@
+// app/(tabs)/chat.tsx
 import React, { useState, useEffect } from 'react';
 import {
   View,
@@ -6,27 +7,60 @@ import {
   FlatList,
   TouchableOpacity,
   SafeAreaView,
-  Image,
+  ActivityIndicator,
+  RefreshControl,
 } from 'react-native';
-import { router } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '@/constants/Colors';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { FirestoreService, Chat } from '@/services/firebase/firestore';
 
 export default function ChatTab() {
-  const [chats, setChats] = useState([]);
+  const [chats, setChats] = useState<Chat[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [userProfile, setUserProfile] = useState<any>(null);
 
   useEffect(() => {
-    loadChats();
+    loadUserProfile();
   }, []);
 
-  const loadChats = async () => {
-    try {
-      const savedChats = await AsyncStorage.getItem('chats');
-      if (savedChats) {
-        setChats(JSON.parse(savedChats));
+  useFocusEffect(
+    React.useCallback(() => {
+      if (userProfile) {
+        loadChats();
+        // Set up real-time listener
+        const unsubscribe = FirestoreService.subscribeToUserChats(
+          userProfile.id,
+          (updatedChats) => {
+            setChats(updatedChats);
+            setLoading(false);
+          }
+        );
+
+        return () => unsubscribe?.();
       }
+    }, [userProfile])
+  );
+
+  const loadUserProfile = async () => {
+    try {
+      const profile = await AsyncStorage.getItem('userProfile');
+      if (profile) {
+        setUserProfile(JSON.parse(profile));
+      }
+    } catch (error) {
+      console.error('Error loading profile:', error);
+    }
+  };
+
+  const loadChats = async () => {
+    if (!userProfile) return;
+
+    try {
+      const userChats = await FirestoreService.getUserChats(userProfile.id);
+      setChats(userChats);
     } catch (error) {
       console.error('Error loading chats:', error);
     } finally {
@@ -34,8 +68,24 @@ export default function ChatTab() {
     }
   };
 
-  const formatTime = (timestamp: string) => {
-    const date = new Date(timestamp);
+  const onRefresh = async () => {
+    setRefreshing(true);
+    await loadChats();
+    setRefreshing(false);
+  };
+
+  const formatTime = (timestamp: any) => {
+    if (!timestamp) return '';
+    
+    let date: Date;
+    if (timestamp.toDate) {
+      date = timestamp.toDate();
+    } else if (timestamp instanceof Date) {
+      date = timestamp;
+    } else {
+      date = new Date(timestamp);
+    }
+
     const now = new Date();
     const diff = now.getTime() - date.getTime();
     const days = Math.floor(diff / (1000 * 60 * 60 * 24));
@@ -51,11 +101,15 @@ export default function ChatTab() {
     }
   };
 
-  const renderChatItem = ({ item }: { item: any }) => {
-    const otherParticipant = Object.entries(item.participantNames).find(
-      ([id, name]) => id !== item.currentUserId
-    );
-    const otherName = otherParticipant ? otherParticipant[1] : 'Unknown';
+  const getOtherParticipantName = (chat: Chat) => {
+    if (!userProfile) return 'Unknown';
+    
+    const otherParticipantId = chat.participants.find(id => id !== userProfile.id);
+    return otherParticipantId ? chat.participantNames[otherParticipantId] || 'Unknown' : 'Unknown';
+  };
+
+  const renderChatItem = ({ item }: { item: Chat }) => {
+    const otherName = getOtherParticipantName(item);
 
     return (
       <TouchableOpacity
@@ -75,7 +129,7 @@ export default function ChatTab() {
           <View style={styles.chatHeader}>
             <Text style={styles.chatName}>{otherName}</Text>
             <Text style={styles.chatTime}>
-              {item.lastMessage ? formatTime(item.lastMessage.timestamp) : ''}
+              {item.lastMessage ? formatTime(item.lastMessage.timestamp) : formatTime(item.createdAt)}
             </Text>
           </View>
           
@@ -83,11 +137,7 @@ export default function ChatTab() {
             <Text style={styles.lastMessage} numberOfLines={1}>
               {item.lastMessage?.content || 'No messages yet'}
             </Text>
-            {item.unreadCount > 0 && (
-              <View style={styles.unreadBadge}>
-                <Text style={styles.unreadText}>{item.unreadCount}</Text>
-              </View>
-            )}
+            {/* You can add unread count here if needed */}
           </View>
         </View>
       </TouchableOpacity>
@@ -104,8 +154,9 @@ export default function ChatTab() {
       </View>
 
       {loading ? (
-        <View style={styles.emptyContainer}>
-          <Text style={styles.emptyText}>Loading chats...</Text>
+        <View style={styles.loadingContainer}>
+          <ActivityIndicator size="large" color={Colors.primary} />
+          <Text style={styles.loadingText}>Loading chats...</Text>
         </View>
       ) : chats.length === 0 ? (
         <View style={styles.emptyContainer}>
@@ -120,6 +171,13 @@ export default function ChatTab() {
           keyExtractor={(item) => item.id}
           style={styles.chatList}
           showsVerticalScrollIndicator={false}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={onRefresh}
+              colors={[Colors.primary]}
+            />
+          }
         />
       )}
     </SafeAreaView>
@@ -215,19 +273,17 @@ const styles = StyleSheet.create({
     color: Colors.textSecondary,
     flex: 1,
   },
-  unreadBadge: {
-    backgroundColor: Colors.primary,
-    borderRadius: 10,
-    minWidth: 20,
-    height: 20,
+  loadingContainer: {
+    flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    marginLeft: 8,
+    paddingHorizontal: 40,
   },
-  unreadText: {
-    color: Colors.textLight,
-    fontSize: 12,
-    fontWeight: 'bold',
+  loadingText: {
+    fontSize: 16,
+    color: Colors.textSecondary,
+    marginTop: 16,
+    textAlign: 'center',
   },
   emptyContainer: {
     flex: 1,

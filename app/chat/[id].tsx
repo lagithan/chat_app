@@ -1,3 +1,4 @@
+// app/chat/[id].tsx
 import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
@@ -10,107 +11,118 @@ import {
   KeyboardAvoidingView,
   Platform,
   Alert,
+  ActivityIndicator,
 } from 'react-native';
 import { useLocalSearchParams, router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '@/constants/Colors';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { FirestoreService, Message, Chat } from '@/services/firebase/firestore';
 import TypingIndicator from '@/components/chat/TypingIndicator';
 
 export default function ChatScreen() {
   const { id } = useLocalSearchParams();
-  const [messages, setMessages] = useState([]);
+  const [messages, setMessages] = useState<Message[]>([]);
   const [inputText, setInputText] = useState('');
-  const [currentUser, setCurrentUser] = useState(null);
-  const [chatInfo, setChatInfo] = useState(null);
+  const [currentUser, setCurrentUser] = useState<any>(null);
+  const [chatInfo, setChatInfo] = useState<Chat | null>(null);
   const [isTyping, setIsTyping] = useState(false);
+  const [otherUserTyping, setOtherUserTyping] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [sending, setSending] = useState(false);
   const flatListRef = useRef<FlatList>(null);
   const typingTimeoutRef = useRef<NodeJS.Timeout>();
 
   useEffect(() => {
-    loadChatData();
-    loadMessages();
+    loadUserData();
   }, []);
 
-  const loadChatData = async () => {
+  useEffect(() => {
+    if (currentUser && id) {
+      loadChatInfo();
+      
+      // Set up real-time message listener
+      const unsubscribeMessages = FirestoreService.subscribeToMessages(
+        id as string,
+        (newMessages) => {
+          setMessages(newMessages);
+          setLoading(false);
+          // Scroll to bottom when new messages arrive
+          setTimeout(() => {
+            flatListRef.current?.scrollToEnd({ animated: true });
+          }, 100);
+        }
+      );
+
+      // Set up typing indicator listener
+      const unsubscribeTyping = FirestoreService.subscribeToTyping(
+        id as string,
+        currentUser.id,
+        (isTyping, userName) => {
+          setOtherUserTyping(isTyping);
+        }
+      );
+
+      return () => {
+        unsubscribeMessages?.();
+        unsubscribeTyping?.();
+      };
+    }
+  }, [currentUser, id]);
+
+  const loadUserData = async () => {
     try {
       const profile = await AsyncStorage.getItem('userProfile');
       if (profile) {
         setCurrentUser(JSON.parse(profile));
       }
-
-      const chats = await AsyncStorage.getItem('chats');
-      if (chats) {
-        const chatList = JSON.parse(chats);
-        const chat = chatList.find((c: any) => c.id === id);
-        setChatInfo(chat);
-      }
     } catch (error) {
-      console.error('Error loading chat data:', error);
+      console.error('Error loading user data:', error);
     }
   };
 
-  const loadMessages = async () => {
+  const loadChatInfo = async () => {
     try {
-      const savedMessages = await AsyncStorage.getItem(`messages_${id}`);
-      if (savedMessages) {
-        setMessages(JSON.parse(savedMessages));
-      }
+      const userChats = await FirestoreService.getUserChats(currentUser.id);
+      const chat = userChats.find((c) => c.id === id);
+      setChatInfo(chat || null);
     } catch (error) {
-      console.error('Error loading messages:', error);
-    }
-  };
-
-  const saveMessage = async (newMessage: any) => {
-    try {
-      const updatedMessages = [...messages, newMessage];
-      setMessages(updatedMessages);
-      await AsyncStorage.setItem(`messages_${id}`, JSON.stringify(updatedMessages));
-      
-      // Update last message in chat list
-      const chats = await AsyncStorage.getItem('chats');
-      if (chats) {
-        const chatList = JSON.parse(chats);
-        const chatIndex = chatList.findIndex((c: any) => c.id === id);
-        if (chatIndex !== -1) {
-          chatList[chatIndex].lastMessage = newMessage;
-          chatList[chatIndex].updatedAt = new Date().toISOString();
-          await AsyncStorage.setItem('chats', JSON.stringify(chatList));
-        }
-      }
-    } catch (error) {
-      console.error('Error saving message:', error);
+      console.error('Error loading chat info:', error);
     }
   };
 
   const sendMessage = async () => {
-    if (!inputText.trim() || !currentUser) return;
+    if (!inputText.trim() || !currentUser || sending) return;
 
-    const newMessage = {
-      id: `msg_${Date.now()}`,
-      chatId: id,
-      senderId: currentUser.id,
-      senderName: currentUser.name,
-      content: inputText.trim(),
-      timestamp: new Date().toISOString(),
-      type: 'text',
-      status: 'sent',
-    };
-
+    const messageText = inputText.trim();
     setInputText('');
-    await saveMessage(newMessage);
-    
-    // Scroll to bottom
-    setTimeout(() => {
-      flatListRef.current?.scrollToEnd({ animated: true });
-    }, 100);
+    setSending(true);
+
+    try {
+      await FirestoreService.sendMessage(
+        id as string,
+        currentUser.id,
+        currentUser.name,
+        messageText
+      );
+      
+      // Stop typing indicator
+      await FirestoreService.updateTypingStatus(id as string, currentUser.id, false);
+    } catch (error) {
+      console.error('Error sending message:', error);
+      Alert.alert('Error', 'Failed to send message');
+      setInputText(messageText); // Restore the message
+    } finally {
+      setSending(false);
+    }
   };
 
-  const handleTyping = (text: string) => {
+  const handleTyping = async (text: string) => {
     setInputText(text);
     
     if (text.length > 0 && !isTyping) {
       setIsTyping(true);
+      await FirestoreService.updateTypingStatus(id as string, currentUser.id, true);
     }
     
     // Clear existing timeout
@@ -119,13 +131,53 @@ export default function ChatScreen() {
     }
     
     // Set new timeout
-    typingTimeoutRef.current = setTimeout(() => {
+    typingTimeoutRef.current = setTimeout(async () => {
       setIsTyping(false);
-    }, 1000);
+      await FirestoreService.updateTypingStatus(id as string, currentUser.id, false);
+    }, 2000);
   };
 
-  const renderMessage = ({ item }: { item: any }) => {
+  const leaveChat = () => {
+    Alert.alert(
+      'Leave Chat',
+      'Are you sure you want to leave this chat? This action cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Leave',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await FirestoreService.leaveChat(id as string, currentUser.id);
+              router.back();
+            } catch (error) {
+              console.error('Error leaving chat:', error);
+              Alert.alert('Error', 'Failed to leave chat');
+            }
+          }
+        }
+      ]
+    );
+  };
+
+  const renderMessage = ({ item }: { item: Message }) => {
     const isMyMessage = item.senderId === currentUser?.id;
+    
+    const formatTime = (timestamp: any) => {
+      let date: Date;
+      if (timestamp?.toDate) {
+        date = timestamp.toDate();
+      } else if (timestamp instanceof Date) {
+        date = timestamp;
+      } else {
+        date = new Date(timestamp);
+      }
+      
+      return date.toLocaleTimeString([], { 
+        hour: '2-digit', 
+        minute: '2-digit' 
+      });
+    };
     
     return (
       <View style={[
@@ -146,10 +198,7 @@ export default function ChatScreen() {
             styles.messageTime,
             isMyMessage ? styles.myMessageTime : styles.otherMessageTime
           ]}>
-            {new Date(item.timestamp).toLocaleTimeString([], { 
-              hour: '2-digit', 
-              minute: '2-digit' 
-            })}
+            {formatTime(item.timestamp)}
           </Text>
         </View>
       </View>
@@ -159,12 +208,31 @@ export default function ChatScreen() {
   const getOtherParticipantName = () => {
     if (!chatInfo || !currentUser) return 'Chat';
     
-    const otherParticipant = Object.entries(chatInfo.participantNames).find(
-      ([userId, name]) => userId !== currentUser.id
-    );
-    
-    return otherParticipant ? otherParticipant[1] as string : 'Chat';
+    const otherParticipantId = chatInfo.participants.find(id => id !== currentUser.id);
+    return otherParticipantId ? chatInfo.participantNames[otherParticipantId] || 'Chat' : 'Chat';
   };
+
+  const showChatOptions = () => {
+    Alert.alert(
+      'Chat Options',
+      'Choose an option',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Leave Chat', style: 'destructive', onPress: leaveChat }
+      ]
+    );
+  };
+
+  if (loading) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <View style={styles.loadingContainer}>
+          <ActivityIndicator size="large" color={Colors.primary} />
+          <Text style={styles.loadingText}>Loading chat...</Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
 
   return (
     <SafeAreaView style={styles.container}>
@@ -181,11 +249,13 @@ export default function ChatScreen() {
           </View>
           <View>
             <Text style={styles.headerName}>{getOtherParticipantName()}</Text>
-            <Text style={styles.headerStatus}>Online</Text>
+            <Text style={styles.headerStatus}>
+              {otherUserTyping ? 'Typing...' : 'Online'}
+            </Text>
           </View>
         </View>
         
-        <TouchableOpacity style={styles.moreButton}>
+        <TouchableOpacity style={styles.moreButton} onPress={showChatOptions}>
           <Ionicons name="ellipsis-vertical" size={20} color={Colors.primary} />
         </TouchableOpacity>
       </View>
@@ -206,7 +276,9 @@ export default function ChatScreen() {
           onContentSizeChange={() => flatListRef.current?.scrollToEnd({ animated: true })}
         />
         
-        <TypingIndicator visible={isTyping} userName={getOtherParticipantName()} />
+        {otherUserTyping && (
+          <TypingIndicator visible={true} userName={getOtherParticipantName()} />
+        )}
         
         <View style={styles.inputContainer}>
           <View style={styles.inputWrapper}>
@@ -218,20 +290,25 @@ export default function ChatScreen() {
               placeholderTextColor={Colors.textSecondary}
               multiline
               maxLength={1000}
+              editable={!sending}
             />
             <TouchableOpacity 
               style={[
                 styles.sendButton,
-                inputText.trim() ? styles.sendButtonActive : styles.sendButtonInactive
+                (inputText.trim() && !sending) ? styles.sendButtonActive : styles.sendButtonInactive
               ]}
               onPress={sendMessage}
-              disabled={!inputText.trim()}
+              disabled={!inputText.trim() || sending}
             >
-              <Ionicons 
-                name="send" 
-                size={20} 
-                color={inputText.trim() ? Colors.textLight : Colors.textSecondary} 
-              />
+              {sending ? (
+                <ActivityIndicator size={16} color={Colors.textLight} />
+              ) : (
+                <Ionicons 
+                  name="send" 
+                  size={20} 
+                  color={(inputText.trim() && !sending) ? Colors.textLight : Colors.textSecondary} 
+                />
+              )}
             </TouchableOpacity>
           </View>
         </View>
@@ -244,6 +321,16 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: Colors.background,
+  },
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  loadingText: {
+    fontSize: 16,
+    color: Colors.textSecondary,
+    marginTop: 16,
   },
   header: {
     flexDirection: 'row',
