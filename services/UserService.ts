@@ -59,7 +59,7 @@ class UserService {
   async uploadAvatar(): Promise<Response<string>> {
     try {
       const permissionResult = await ImagePicker.requestMediaLibraryPermissionsAsync();
-      
+
       if (!permissionResult.granted) {
         return { success: false, error: "Permission to access camera roll is required!" };
       }
@@ -85,7 +85,7 @@ class UserService {
   async takePicture(): Promise<Response<string>> {
     try {
       const permissionResult = await ImagePicker.requestCameraPermissionsAsync();
-      
+
       if (!permissionResult.granted) {
         return { success: false, error: "Permission to access camera is required!" };
       }
@@ -111,12 +111,12 @@ class UserService {
     const timestamp = Date.now().toString();
     const randomString = Math.random().toString(36).substring(2, 15);
     const dataToHash = username + timestamp + randomString;
-    
+
     const userId = await Crypto.digestStringAsync(
       Crypto.CryptoDigestAlgorithm.SHA256,
       dataToHash
     );
-    
+
     return userId.substring(0, 16);
   }
 
@@ -124,12 +124,12 @@ class UserService {
     const timestamp = Date.now().toString();
     const randomString = Math.random().toString(36).substring(2, 15);
     const dataToHash = timestamp + randomString;
-    
+
     const sessionId = await Crypto.digestStringAsync(
       Crypto.CryptoDigestAlgorithm.SHA256,
       dataToHash
     );
-    
+
     return sessionId.substring(0, 12);
   }
 
@@ -139,7 +139,7 @@ class UserService {
       if (!user) {
         throw new Error('User not found');
       }
-      
+
       return { success: true, data: user };
     } catch (error: any) {
       console.error('Error getting user profile:', error);
@@ -161,9 +161,9 @@ class UserService {
   async getUserLastSeen(userId: string): Promise<Response<number | null>> {
     try {
       const lastSeen = await AsyncStorage.getItem(`lastSeen_${userId}`);
-      return { 
-        success: true, 
-        data: lastSeen ? parseInt(lastSeen) : null 
+      return {
+        success: true,
+        data: lastSeen ? parseInt(lastSeen) : null
       };
     } catch (error: any) {
       console.error('Error getting last seen:', error);
@@ -173,15 +173,15 @@ class UserService {
 
   formatLastSeen(timestamp: number | null): string {
     if (!timestamp) return 'Never';
-    
+
     const now = Date.now();
     const diff = now - timestamp;
-    
+
     const seconds = Math.floor(diff / 1000);
     const minutes = Math.floor(seconds / 60);
     const hours = Math.floor(minutes / 60);
     const days = Math.floor(hours / 24);
-    
+
     if (seconds < 60) {
       return 'Just now';
     } else if (minutes < 60) {
@@ -247,19 +247,19 @@ class UserService {
     if (!username || username.trim().length === 0) {
       return { isValid: false, error: 'Username is required' };
     }
-    
+
     if (username.length < 3) {
       return { isValid: false, error: 'Username must be at least 3 characters' };
     }
-    
+
     if (username.length > 20) {
       return { isValid: false, error: 'Username must be less than 20 characters' };
     }
-    
+
     if (!/^[a-zA-Z0-9_]+$/.test(username)) {
       return { isValid: false, error: 'Username can only contain letters, numbers, and underscores' };
     }
-    
+
     return { isValid: true };
   }
 
@@ -267,12 +267,12 @@ class UserService {
     if (!email || email.trim().length === 0) {
       return { isValid: true };
     }
-    
+
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(email)) {
       return { isValid: false, error: 'Invalid email format' };
     }
-    
+
     return { isValid: true };
   }
 
@@ -280,11 +280,11 @@ class UserService {
     if (!password || password.length === 0) {
       return { isValid: false, error: 'Password is required' };
     }
-    
+
     if (password.length < 6) {
       return { isValid: false, error: 'Password must be at least 6 characters' };
     }
-    
+
     return { isValid: true };
   }
 }

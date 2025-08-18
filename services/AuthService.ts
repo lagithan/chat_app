@@ -37,7 +37,7 @@ class AuthService {
   async createAccount(userData: Partial<User>, password: string): Promise<Response<User>> {
     try {
       const { username, email, fullName, bio } = userData;
-      
+
       if (!username) {
         throw new Error('Username is required');
       }

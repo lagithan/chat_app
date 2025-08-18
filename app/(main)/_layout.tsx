@@ -1,4 +1,4 @@
- import { Tabs } from 'expo-router';
+import { Tabs } from 'expo-router';
 import { MaterialIcons } from '@expo/vector-icons';
 
 export default function MainLayout() {
@@ -46,7 +46,7 @@ export default function MainLayout() {
           headerTitle: 'Profile',
         }}
       />
-      
+
       {/* Hidden tabs - no tab bar icons */}
       <Tabs.Screen
         name="chat"

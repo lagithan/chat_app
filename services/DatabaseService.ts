@@ -321,7 +321,6 @@ class DatabaseService {
     );
   }
 
-  // New method to update an existing session with a participant's details
   async updateSessionWithParticipant(sessionId: string, participantId: string, participantName: string): Promise<void> {
     if (!this.db) throw new Error('Database not initialized');
     const timestamp = Date.now();

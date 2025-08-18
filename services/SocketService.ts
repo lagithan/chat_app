@@ -1,7 +1,5 @@
 import { io, Socket } from 'socket.io-client';
 import DatabaseService, { User, Message, Session } from './DatabaseService';
-import * as Notifications from 'expo-notifications';
-import { NotificationBehavior } from 'expo-notifications';
 
 class SocketService {
   private socket: Socket | null = null;
@@ -11,22 +9,6 @@ class SocketService {
   private connectionHandlers: Set<(status: boolean) => void> = new Set();
   private userJoinHandlers: Set<(userData: Partial<User>) => void> = new Set();
   private userLeftHandlers: Set<(userData: Partial<User>) => void> = new Set();
-
-  constructor() {
-    this.setupNotifications();
-  }
-
-  private async setupNotifications() {
-    await Notifications.setNotificationHandler({
-      handleNotification: async (): Promise<NotificationBehavior> => ({
-        shouldShowAlert: true,
-        shouldPlaySound: true,
-        shouldSetBadge: false,
-        shouldShowBanner: true,
-        shouldShowList: true,
-      }),
-    });
-  }
 
   connect(userId: string, userName: string) {
     try {
@@ -73,7 +55,6 @@ class SocketService {
         });
 
         this.notifyMessageHandlers(messageData);
-        this.showNotification(messageData);
       } catch (error) {
         console.error('Error handling received message:', error);
       }
@@ -266,21 +247,6 @@ class SocketService {
         console.error('Error in user left handler:', error);
       }
     });
-  }
-
-  private async showNotification(messageData: Partial<Message>) {
-    try {
-      await Notifications.scheduleNotificationAsync({
-        content: {
-          title: `New message from ${messageData.senderName || 'Unknown'}`,
-          body: messageData.message || 'New message',
-          data: { sessionId: messageData.sessionId },
-        },
-        trigger: null,
-      });
-    } catch (error) {
-      console.error('Error showing notification:', error);
-    }
   }
 
   isSocketConnected(): boolean {

@@ -1,49 +1,36 @@
- import { useEffect } from 'react';
+import { useEffect } from 'react';
 import { router } from 'expo-router';
-import { View, Text, StyleSheet } from 'react-native';
-import AuthService from '../services/AuthService';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { View, ActivityIndicator } from 'react-native';
+import { Colors } from '@/constants/Colors';
 
 export default function Index() {
   useEffect(() => {
-    checkAuthStatus();
+    checkFirstTimeUser();
   }, []);
 
-  const checkAuthStatus = async () => {
+  const checkFirstTimeUser = async () => {
     try {
-      const isLoggedIn = await AuthService.isLoggedIn();
-      
-      if (isLoggedIn) {
-        router.replace('/(main)/home');
+      const userProfile = await AsyncStorage.getItem('userProfile');
+      if (userProfile) {
+        router.replace('/(tabs)/chat');
       } else {
-        const isFirstTime = await AuthService.isFirstTimeUser();
-        if (isFirstTime) {
-          router.replace('/(auth)/welcome');
-        } else {
-          router.replace('/(auth)/login');
-        }
+        router.replace('/onboarding/setup');
       }
     } catch (error) {
-      console.error('Auth check error:', error);
-      router.replace('/(auth)/welcome');
+      console.error('Error checking user profile:', error);
+      router.replace('/onboarding/setup');
     }
   };
 
   return (
-    <View style={styles.container}>
-      <Text style={styles.text}>Loading Quick Chat...</Text>
+    <View style={{ 
+      flex: 1, 
+      justifyContent: 'center', 
+      alignItems: 'center',
+      backgroundColor: Colors.primary 
+    }}>
+      <ActivityIndicator size="large" color={Colors.textLight} />
     </View>
   );
 }
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: '#f8f9fa',
-  },
-  text: {
-    fontSize: 18,
-    color: '#666',
-  },
-});
