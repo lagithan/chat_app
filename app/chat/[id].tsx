@@ -12,41 +12,125 @@ import {
   Platform,
   Alert,
   ActivityIndicator,
+  Vibration,
 } from 'react-native';
 import { useLocalSearchParams, router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '@/constants/Colors';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { FirestoreService, Message, Chat } from '@/services/firebase/firestore';
+import { FirestoreService } from '@/services/firebase/firestore';
+import { DatabaseService } from '@/services/database/sqlite';
+import { NotificationService } from '@/services/notifications/push';
 import TypingIndicator from '@/components/chat/TypingIndicator';
+import { Message, Chat, User } from '@/types/chat';
 
 export default function ChatScreen() {
   const { id } = useLocalSearchParams();
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputText, setInputText] = useState('');
-  const [currentUser, setCurrentUser] = useState<any>(null);
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [chatInfo, setChatInfo] = useState<Chat | null>(null);
   const [isTyping, setIsTyping] = useState(false);
   const [otherUserTyping, setOtherUserTyping] = useState(false);
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
+  const [isConnected, setIsConnected] = useState(true);
   const flatListRef = useRef<FlatList>(null);
   const typingTimeoutRef = useRef<NodeJS.Timeout>();
+  const db = DatabaseService.getInstance();
 
   useEffect(() => {
     loadUserData();
+    loadOfflineMessages();
   }, []);
 
   useEffect(() => {
     if (currentUser && id) {
       loadChatInfo();
+      setupRealtimeListeners();
+      markMessagesAsRead();
       
+      return () => {
+        cleanupListeners();
+      };
+    }
+  }, [currentUser, id]);
+
+  const loadUserData = async () => {
+    try {
+      const profile = await AsyncStorage.getItem('userProfile');
+      if (profile) {
+        const user = JSON.parse(profile);
+        setCurrentUser(user);
+        await db.updateUserLastSeen(user.id);
+      }
+    } catch (error) {
+      console.error('Error loading user data:', error);
+    }
+  };
+
+  const loadOfflineMessages = async () => {
+    try {
+      if (id) {
+        const offlineMessages = await db.getMessagesForChat(id as string);
+        setMessages(offlineMessages);
+        setLoading(false);
+      }
+    } catch (error) {
+      console.error('Error loading offline messages:', error);
+    }
+  };
+
+  const loadChatInfo = async () => {
+    try {
+      // Try loading from local database first
+      let chat = await db.getChatById(id as string);
+      
+      if (!chat && currentUser) {
+        // If not found locally, try Firebase
+        const userChats = await FirestoreService.getUserChats(currentUser.id);
+        chat = userChats.find((c) => c.id === id) || null;
+        
+        if (chat) {
+          await db.saveChat(chat);
+        }
+      }
+      
+      setChatInfo(chat);
+    } catch (error) {
+      console.error('Error loading chat info:', error);
+    }
+  };
+
+  const setupRealtimeListeners = () => {
+    if (!currentUser || !id) return;
+
+    try {
       // Set up real-time message listener
       const unsubscribeMessages = FirestoreService.subscribeToMessages(
         id as string,
-        (newMessages) => {
+        async (newMessages) => {
           setMessages(newMessages);
           setLoading(false);
+          
+          // Save messages to local database
+          for (const message of newMessages) {
+            await db.saveMessage(message);
+            
+            // Show notification if message is from other user and app is in background
+            if (message.senderId !== currentUser.id) {
+              await NotificationService.showChatNotification(
+                message.senderName,
+                message.content,
+                message.chatId,
+                message.senderId
+              );
+              
+              // Vibrate for new messages
+              Vibration.vibrate(100);
+            }
+          }
+          
           // Scroll to bottom when new messages arrive
           setTimeout(() => {
             flatListRef.current?.scrollToEnd({ animated: true });
@@ -63,31 +147,32 @@ export default function ChatScreen() {
         }
       );
 
-      return () => {
-        unsubscribeMessages?.();
-        unsubscribeTyping?.();
-      };
-    }
-  }, [currentUser, id]);
-
-  const loadUserData = async () => {
-    try {
-      const profile = await AsyncStorage.getItem('userProfile');
-      if (profile) {
-        setCurrentUser(JSON.parse(profile));
-      }
+      // Store unsubscribe functions
+      ChatScreen.unsubscribeMessages = unsubscribeMessages;
+      ChatScreen.unsubscribeTyping = unsubscribeTyping;
     } catch (error) {
-      console.error('Error loading user data:', error);
+      console.error('Error setting up real-time listeners:', error);
+      setIsConnected(false);
     }
   };
 
-  const loadChatInfo = async () => {
+  const cleanupListeners = () => {
+    if (ChatScreen.unsubscribeMessages) {
+      ChatScreen.unsubscribeMessages();
+    }
+    if (ChatScreen.unsubscribeTyping) {
+      ChatScreen.unsubscribeTyping();
+    }
+  };
+
+  const markMessagesAsRead = async () => {
+    if (!currentUser || !id) return;
+    
     try {
-      const userChats = await FirestoreService.getUserChats(currentUser.id);
-      const chat = userChats.find((c) => c.id === id);
-      setChatInfo(chat || null);
+      await db.markMessagesAsRead(id as string, currentUser.id);
+      await NotificationService.clearChatNotifications(id as string);
     } catch (error) {
-      console.error('Error loading chat info:', error);
+      console.error('Error marking messages as read:', error);
     }
   };
 
@@ -95,10 +180,26 @@ export default function ChatScreen() {
     if (!inputText.trim() || !currentUser || sending) return;
 
     const messageText = inputText.trim();
+    const tempId = `temp_${Date.now()}`;
+    
+    // Create temporary message for immediate UI update
+    const tempMessage: Message = {
+      id: tempId,
+      chatId: id as string,
+      senderId: currentUser.id,
+      senderName: currentUser.name,
+      content: messageText,
+      timestamp: new Date(),
+      type: 'text',
+      status: 'sending'
+    };
+
     setInputText('');
     setSending(true);
+    setMessages(prev => [...prev, tempMessage]);
 
     try {
+      // Send to Firebase
       await FirestoreService.sendMessage(
         id as string,
         currentUser.id,
@@ -106,12 +207,42 @@ export default function ChatScreen() {
         messageText
       );
       
+      // Update message status to sent
+      setMessages(prev => 
+        prev.map(msg => 
+          msg.id === tempId 
+            ? { ...msg, status: 'sent' as const }
+            : msg
+        )
+      );
+      
       // Stop typing indicator
       await FirestoreService.updateTypingStatus(id as string, currentUser.id, false);
+      setIsTyping(false);
+      
     } catch (error) {
       console.error('Error sending message:', error);
-      Alert.alert('Error', 'Failed to send message');
-      setInputText(messageText); // Restore the message
+      
+      // Save to local database for later sync
+      const offlineMessage: Message = {
+        ...tempMessage,
+        id: `offline_${Date.now()}`,
+        status: 'failed'
+      };
+      
+      await db.saveMessage(offlineMessage);
+      await db.addToSyncQueue('send_message', 'messages', offlineMessage.id, offlineMessage);
+      
+      // Update UI to show failed status
+      setMessages(prev => 
+        prev.map(msg => 
+          msg.id === tempId 
+            ? { ...msg, status: 'failed' as const }
+            : msg
+        )
+      );
+      
+      Alert.alert('Error', 'Failed to send message. It will be sent when you\'re back online.');
     } finally {
       setSending(false);
     }
@@ -120,9 +251,13 @@ export default function ChatScreen() {
   const handleTyping = async (text: string) => {
     setInputText(text);
     
-    if (text.length > 0 && !isTyping) {
+    if (text.length > 0 && !isTyping && currentUser) {
       setIsTyping(true);
-      await FirestoreService.updateTypingStatus(id as string, currentUser.id, true);
+      try {
+        await FirestoreService.updateTypingStatus(id as string, currentUser.id, true);
+      } catch (error) {
+        console.error('Error updating typing status:', error);
+      }
     }
     
     // Clear existing timeout
@@ -133,31 +268,101 @@ export default function ChatScreen() {
     // Set new timeout
     typingTimeoutRef.current = setTimeout(async () => {
       setIsTyping(false);
-      await FirestoreService.updateTypingStatus(id as string, currentUser.id, false);
+      if (currentUser) {
+        try {
+          await FirestoreService.updateTypingStatus(id as string, currentUser.id, false);
+        } catch (error) {
+          console.error('Error clearing typing status:', error);
+        }
+      }
     }, 2000);
   };
 
-  const leaveChat = () => {
+  const showChatOptions = () => {
     Alert.alert(
-      'Leave Chat',
-      'Are you sure you want to leave this chat? This action cannot be undone.',
+      'Chat Options',
+      'Choose an option',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { 
+          text: 'Clear Chat History', 
+          onPress: clearChatHistory,
+          style: 'destructive' 
+        },
+        { 
+          text: 'Leave Chat', 
+          style: 'destructive', 
+          onPress: confirmLeaveChat 
+        }
+      ]
+    );
+  };
+
+  const clearChatHistory = () => {
+    Alert.alert(
+      'Clear Chat History',
+      'This will delete all messages in this chat. This action cannot be undone.',
       [
         { text: 'Cancel', style: 'cancel' },
         {
-          text: 'Leave',
+          text: 'Clear',
           style: 'destructive',
           onPress: async () => {
             try {
-              await FirestoreService.leaveChat(id as string, currentUser.id);
-              router.back();
+              // Clear messages from local database
+              await db.db.runSync('DELETE FROM messages WHERE chat_id = ?', [id]);
+              setMessages([]);
+              
+              Alert.alert('Success', 'Chat history cleared');
             } catch (error) {
-              console.error('Error leaving chat:', error);
-              Alert.alert('Error', 'Failed to leave chat');
+              console.error('Error clearing chat history:', error);
+              Alert.alert('Error', 'Failed to clear chat history');
             }
           }
         }
       ]
     );
+  };
+
+  const confirmLeaveChat = () => {
+    Alert.alert(
+      'Leave Chat',
+      'Are you sure you want to leave this chat? You will no longer receive messages from this conversation.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Leave',
+          style: 'destructive',
+          onPress: leaveChat
+        }
+      ]
+    );
+  };
+
+  const leaveChat = async () => {
+    if (!currentUser) return;
+
+    try {
+      // Leave chat in Firebase
+      await FirestoreService.leaveChat(id as string, currentUser.id);
+      
+      // Update local database
+      await db.db.runSync(
+        'UPDATE chats SET is_active = 0 WHERE id = ?',
+        [id]
+      );
+      
+      // Clear notifications for this chat
+      await NotificationService.clearChatNotifications(id as string);
+      
+      // Navigate back
+      router.back();
+      
+      Alert.alert('Success', 'You have left the chat');
+    } catch (error) {
+      console.error('Error leaving chat:', error);
+      Alert.alert('Error', 'Failed to leave chat. Please try again.');
+    }
   };
 
   const renderMessage = ({ item }: { item: Message }) => {
@@ -178,6 +383,23 @@ export default function ChatScreen() {
         minute: '2-digit' 
       });
     };
+
+    const getStatusIcon = () => {
+      switch (item.status) {
+        case 'sending':
+          return <ActivityIndicator size={12} color={Colors.textLight} />;
+        case 'sent':
+          return <Ionicons name="checkmark" size={12} color={Colors.textLight} />;
+        case 'delivered':
+          return <Ionicons name="checkmark-done" size={12} color={Colors.textLight} />;
+        case 'read':
+          return <Ionicons name="checkmark-done" size={12} color={Colors.success} />;
+        case 'failed':
+          return <Ionicons name="alert-circle" size={12} color={Colors.error} />;
+        default:
+          return null;
+      }
+    };
     
     return (
       <View style={[
@@ -194,12 +416,19 @@ export default function ChatScreen() {
           ]}>
             {item.content}
           </Text>
-          <Text style={[
-            styles.messageTime,
-            isMyMessage ? styles.myMessageTime : styles.otherMessageTime
-          ]}>
-            {formatTime(item.timestamp)}
-          </Text>
+          <View style={styles.messageFooter}>
+            <Text style={[
+              styles.messageTime,
+              isMyMessage ? styles.myMessageTime : styles.otherMessageTime
+            ]}>
+              {formatTime(item.timestamp)}
+            </Text>
+            {isMyMessage && (
+              <View style={styles.messageStatus}>
+                {getStatusIcon()}
+              </View>
+            )}
+          </View>
         </View>
       </View>
     );
@@ -210,17 +439,6 @@ export default function ChatScreen() {
     
     const otherParticipantId = chatInfo.participants.find(id => id !== currentUser.id);
     return otherParticipantId ? chatInfo.participantNames[otherParticipantId] || 'Chat' : 'Chat';
-  };
-
-  const showChatOptions = () => {
-    Alert.alert(
-      'Chat Options',
-      'Choose an option',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Leave Chat', style: 'destructive', onPress: leaveChat }
-      ]
-    );
   };
 
   if (loading) {
@@ -236,6 +454,7 @@ export default function ChatScreen() {
 
   return (
     <SafeAreaView style={styles.container}>
+      {/* Header */}
       <View style={styles.header}>
         <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
           <Ionicons name="arrow-back" size={24} color={Colors.primary} />
@@ -250,7 +469,7 @@ export default function ChatScreen() {
           <View>
             <Text style={styles.headerName}>{getOtherParticipantName()}</Text>
             <Text style={styles.headerStatus}>
-              {otherUserTyping ? 'Typing...' : 'Online'}
+              {otherUserTyping ? 'Typing...' : isConnected ? 'Online' : 'Offline'}
             </Text>
           </View>
         </View>
@@ -259,6 +478,14 @@ export default function ChatScreen() {
           <Ionicons name="ellipsis-vertical" size={20} color={Colors.primary} />
         </TouchableOpacity>
       </View>
+
+      {/* Connection status */}
+      {!isConnected && (
+        <View style={styles.offlineIndicator}>
+          <Ionicons name="cloud-offline" size={16} color={Colors.textLight} />
+          <Text style={styles.offlineText}>Messages will sync when back online</Text>
+        </View>
+      )}
 
       <KeyboardAvoidingView 
         style={styles.content}
@@ -280,6 +507,7 @@ export default function ChatScreen() {
           <TypingIndicator visible={true} userName={getOtherParticipantName()} />
         )}
         
+        {/* Input Container */}
         <View style={styles.inputContainer}>
           <View style={styles.inputWrapper}>
             <TextInput
@@ -316,6 +544,10 @@ export default function ChatScreen() {
     </SafeAreaView>
   );
 }
+
+// Add static properties to store unsubscribe functions
+ChatScreen.unsubscribeMessages = null;
+ChatScreen.unsubscribeTyping = null;
 
 const styles = StyleSheet.create({
   container: {
@@ -376,6 +608,19 @@ const styles = StyleSheet.create({
   moreButton: {
     padding: 8,
   },
+  offlineIndicator: {
+    backgroundColor: Colors.warning,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  offlineText: {
+    color: Colors.textLight,
+    fontSize: 12,
+    marginLeft: 4,
+  },
   content: {
     flex: 1,
   },
@@ -419,9 +664,14 @@ const styles = StyleSheet.create({
   otherMessageText: {
     color: Colors.text,
   },
+  messageFooter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    marginTop: 4,
+  },
   messageTime: {
     fontSize: 11,
-    marginTop: 4,
   },
   myMessageTime: {
     color: Colors.textLight,
@@ -429,6 +679,9 @@ const styles = StyleSheet.create({
   },
   otherMessageTime: {
     color: Colors.textSecondary,
+  },
+  messageStatus: {
+    marginLeft: 4,
   },
   inputContainer: {
     paddingHorizontal: 16,

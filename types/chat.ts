@@ -1,27 +1,65 @@
+// types/chat.ts
+export interface User {
+  id: string;
+  name: string;
+  profileImage?: string;
+  deviceId: string;
+  createdAt?: string;
+}
+
+export interface ChatSession {
+  id: string;
+  hostId: string;
+  hostName: string;
+  createdAt: any;
+  isActive: boolean;
+  expiresAt: any;
+}
+
+export interface Chat {
+  id: string;
+  participants: string[];
+  participantNames: { [key: string]: string };
+  createdAt: any;
+  updatedAt: any;
+  lastMessage?: {
+    content: string;
+    timestamp: any;
+    senderId: string;
+  };
+  isActive: boolean;
+}
+
 export interface Message {
   id: string;
   chatId: string;
   senderId: string;
   senderName: string;
   content: string;
-  timestamp: Date;
-  type: 'text' | 'image';
-  status: 'sending' | 'sent' | 'delivered' | 'read';
+  timestamp: any;
+  type: 'text' | 'image' | 'file';
+  status: 'sending' | 'sent' | 'delivered' | 'read' | 'failed';
 }
 
-export interface Chat {
-  id: string;
-  participants: string[];
-  participantNames: { [userId: string]: string };
-  lastMessage?: Message;
-  updatedAt: Date;
-  isTyping?: { [userId: string]: boolean };
+export interface TypingStatus {
+  userId: string;
+  userName: string;
+  isTyping: boolean;
+  timestamp: any;
 }
 
-export interface ChatSession {
-  id: string;
+export interface NotificationData {
+  type: 'chat' | 'connection_request' | 'system';
+  chatId?: string;
+  senderId?: string;
+  senderName?: string;
+  message?: string;
+}
+
+export interface QRSessionData {
+  type: 'chat_session';
+  sessionId: string;
   hostId: string;
-  qrCode: string;
-  isActive: boolean;
-  createdAt: Date;
+  hostName: string;
+  timestamp: string;
 }

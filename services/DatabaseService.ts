@@ -28,7 +28,7 @@ export interface Contact {
 
 export interface Message {
   id: number;
-  sessionId: string;
+  chatId: string, 
   senderId: string;
   receiverId: string;
   senderName: string;
@@ -252,10 +252,10 @@ class DatabaseService {
 
   async saveMessage(messageData: Partial<Message>): Promise<void> {
     if (!this.db) throw new Error('Database not initialized');
-    const { sessionId, senderId, receiverId, senderName, receiverName, message, messageType, timestamp } = messageData;
+    const { chatId, senderId, receiverId, senderName, receiverName, message, messageType, timestamp } = messageData;
     await executeSqlAsync(this.db,
-      'INSERT INTO messages (sessionId, senderId, receiverId, senderName, receiverName, message, messageType, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-      [sessionId, senderId, receiverId, senderName, receiverName, message, messageType || 'text', timestamp]
+      'INSERT INTO messages (chatId, senderId, receiverId, senderName, receiverName, message, messageType, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      [chatId, senderId, receiverId, senderName, receiverName, message, messageType || 'text', timestamp]
     );
     await this.updateContactLastMessage(senderId!, receiverId!, message!, timestamp!);
   }
