@@ -138,48 +138,103 @@ export class FirestoreService {
 
   static async getUserChats(userId: string): Promise<Chat[]> {
     try {
+      // Use a simpler query to avoid index issues
       const q = query(
         collection(db, 'chats'),
-        where('participants', 'array-contains', userId),
-        where('isActive', '==', true),
-        orderBy('updatedAt', 'desc')
+        where('participants', 'array-contains', userId)
       );
       
       const querySnapshot = await getDocs(q);
       const chats: Chat[] = [];
       
       querySnapshot.forEach((doc) => {
-        chats.push({
-          id: doc.id,
-          ...doc.data()
-        } as Chat);
+        const data = doc.data();
+        // Filter active chats and sort in memory
+        if (data.isActive) {
+          chats.push({
+            id: doc.id,
+            ...data
+          } as Chat);
+        }
+      });
+      
+      // Sort by updatedAt in memory
+      chats.sort((a, b) => {
+        const aTime = a.updatedAt?.toDate?.() || new Date(0);
+        const bTime = b.updatedAt?.toDate?.() || new Date(0);
+        return bTime.getTime() - aTime.getTime();
       });
       
       return chats;
     } catch (error) {
       console.error('Error getting user chats:', error);
+      
+      // If the query fails due to index issues, provide helpful error message
+      if (error instanceof Error && error.message.includes('index')) {
+        console.error('Firestore index required. Please create the required composite index:');
+        console.error('Collection: chats');
+        console.error('Fields: participants (Array-contains), isActive (Ascending), updatedAt (Descending)');
+        console.error('You can create it in the Firebase console or use the link provided in the error message.');
+      }
+      
       throw error;
     }
   }
 
-  static subscribeToUserChats(userId: string, callback: (chats: Chat[]) => void) {
-    const q = query(
-      collection(db, 'chats'),
-      where('participants', 'array-contains', userId),
-      where('isActive', '==', true),
-      orderBy('updatedAt', 'desc')
-    );
-    
-    return onSnapshot(q, (snapshot) => {
-      const chats: Chat[] = [];
-      snapshot.forEach((doc) => {
-        chats.push({
-          id: doc.id,
-          ...doc.data()
-        } as Chat);
-      });
-      callback(chats);
-    });
+  static subscribeToUserChats(userId: string, callback: (chats: Chat[]) => void, onError?: (error: Error) => void) {
+    try {
+      // Use a simpler query to avoid index issues
+      const q = query(
+        collection(db, 'chats'),
+        where('participants', 'array-contains', userId)
+      );
+      
+      return onSnapshot(q, 
+        (snapshot) => {
+          const chats: Chat[] = [];
+          snapshot.forEach((doc) => {
+            const data = doc.data();
+            // Filter active chats and sort in memory
+            if (data.isActive) {
+              chats.push({
+                id: doc.id,
+                ...data
+              } as Chat);
+            }
+          });
+          
+          // Sort by updatedAt in memory
+          chats.sort((a, b) => {
+            const aTime = a.updatedAt?.toDate?.() || new Date(0);
+            const bTime = b.updatedAt?.toDate?.() || new Date(0);
+            return bTime.getTime() - aTime.getTime();
+          });
+          
+          callback(chats);
+        },
+        (error) => {
+          console.error('Error in chat subscription:', error);
+          
+          // If the query fails due to index issues, provide helpful error message
+          if (error.message.includes('index')) {
+            console.error('Firestore index required. Please create the required composite index:');
+            console.error('Collection: chats');
+            console.error('Fields: participants (Array-contains), isActive (Ascending), updatedAt (Descending)');
+            console.error('You can create it in the Firebase console using the link provided in the error message.');
+          }
+          
+          if (onError) {
+            onError(error);
+          }
+        }
+      );
+    } catch (error) {
+      console.error('Error setting up chat subscription:', error);
+      if (onError && error instanceof Error) {
+        onError(error);
+      }
+      return () => {}; // Return empty unsubscribe function
+    }
   }
 
   // Message Management
@@ -218,23 +273,39 @@ export class FirestoreService {
     }
   }
 
-  static subscribeToMessages(chatId: string, callback: (messages: Message[]) => void) {
-    const q = query(
-      collection(db, 'chats', chatId, 'messages'),
-      orderBy('timestamp', 'asc')
-    );
-    
-    return onSnapshot(q, (snapshot) => {
-      const messages: Message[] = [];
-      snapshot.forEach((doc) => {
-        messages.push({
-          id: doc.id,
-          chatId,
-          ...doc.data()
-        } as Message);
-      });
-      callback(messages);
-    });
+  static subscribeToMessages(chatId: string, callback: (messages: Message[]) => void, onError?: (error: Error) => void) {
+    try {
+      const q = query(
+        collection(db, 'chats', chatId, 'messages'),
+        orderBy('timestamp', 'asc')
+      );
+      
+      return onSnapshot(q, 
+        (snapshot) => {
+          const messages: Message[] = [];
+          snapshot.forEach((doc) => {
+            messages.push({
+              id: doc.id,
+              chatId,
+              ...doc.data()
+            } as Message);
+          });
+          callback(messages);
+        },
+        (error) => {
+          console.error('Error in message subscription:', error);
+          if (onError) {
+            onError(error);
+          }
+        }
+      );
+    } catch (error) {
+      console.error('Error setting up message subscription:', error);
+      if (onError && error instanceof Error) {
+        onError(error);
+      }
+      return () => {}; // Return empty unsubscribe function
+    }
   }
 
   // Chat Actions

@@ -20,7 +20,7 @@ import { Colors } from '@/constants/Colors';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { FirestoreService } from '@/services/firebase/firestore';
 import { DatabaseService } from '@/services/database/sqlite';
-import { NotificationService } from '@/services/notifications/push';
+
 import TypingIndicator from '@/components/chat/TypingIndicator';
 import { Message, Chat, User } from '@/types/chat';
 
@@ -119,12 +119,12 @@ export default function ChatScreen() {
             
             // Show notification if message is from other user and app is in background
             if (message.senderId !== currentUser.id) {
-              await NotificationService.showChatNotification(
-                message.senderName,
-                message.content,
-                message.chatId,
-                message.senderId
-              );
+              // await NotificationService.showChatNotification(
+              //   message.senderName,
+              //   message.content,
+              //   message.chatId,
+              //   message.senderId
+              // );
               
               // Vibrate for new messages
               Vibration.vibrate(100);
@@ -170,7 +170,7 @@ export default function ChatScreen() {
     
     try {
       await db.markMessagesAsRead(id as string, currentUser.id);
-      await NotificationService.clearChatNotifications(id as string);
+      // await NotificationService.clearChatNotifications(id as string);
     } catch (error) {
       console.error('Error marking messages as read:', error);
     }
@@ -353,7 +353,7 @@ export default function ChatScreen() {
       );
       
       // Clear notifications for this chat
-      await NotificationService.clearChatNotifications(id as string);
+      // await NotificationService.clearChatNotifications(id as string);
       
       // Navigate back
       router.back();

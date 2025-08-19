@@ -148,9 +148,6 @@ export default function ChatTab() {
     <SafeAreaView style={styles.container}>
       <View style={styles.header}>
         <Text style={styles.title}>Chats</Text>
-        <TouchableOpacity style={styles.notificationButton}>
-          <Ionicons name="notifications-outline" size={24} color={Colors.primary} />
-        </TouchableOpacity>
       </View>
 
       {loading ? (

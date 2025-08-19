@@ -2,7 +2,7 @@
 import * as Network from 'expo-network';
 import { DatabaseService } from '@/services/database/sqlite';
 import { FirestoreService } from '@/services/firebase/firestore';
-import { NotificationService } from '@/services/notifications/push';
+// import { NotificationService } from '@/services/notifications/push';
 import { getCurrentUserProfile } from '@/services/firebase/config';
 import { Message, Chat } from '@/types/chat';
 
@@ -94,20 +94,20 @@ export class SyncService {
 
       console.log('Sync completed successfully');
       
-      // Show success notification
-      await NotificationService.showSystemNotification(
-        'Sync Complete',
-        'All messages have been synchronized'
-      );
+    //   // Show success notification
+    //   await NotificationService.showSystemNotification(
+    //     'Sync Complete',
+    //     'All messages have been synchronized'
+    //   );
 
     } catch (error) {
       console.error('Error during sync:', error);
       
-      // Show error notification
-      await NotificationService.showSystemNotification(
-        'Sync Failed',
-        'Some messages could not be synchronized'
-      );
+    //   // Show error notification
+    //   await NotificationService.showSystemNotification(
+    //     'Sync Failed',
+    //     'Some messages could not be synchronized'
+    //   );
     } finally {
       this.syncInProgress = false;
       this.notifySyncListeners();
@@ -238,12 +238,12 @@ export class SyncService {
       // Show notification if from other user
       const currentUser = await getCurrentUserProfile();
       if (currentUser && message.senderId !== currentUser.id) {
-        await NotificationService.showChatNotification(
-          message.senderName,
-          message.content,
-          message.chatId,
-          message.senderId
-        );
+        // await NotificationService.showChatNotification(
+        //   message.senderName,
+        //   message.content,
+        //   message.chatId,
+        //   message.senderId
+        // );
       }
       
     } catch (error) {
@@ -263,10 +263,10 @@ export class SyncService {
   // Force sync (for manual refresh)
   async forcSync(): Promise<boolean> {
     if (!this.isOnline) {
-      await NotificationService.showSystemNotification(
-        'Sync Failed',
-        'No internet connection available'
-      );
+    //   await NotificationService.showSystemNotification(
+    //     'Sync Failed',
+    //     'No internet connection available'
+    //   );
       return false;
     }
 

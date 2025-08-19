@@ -224,7 +224,7 @@ export class DatabaseService {
     `);
 
     // Create indexes
-    this.createIndexes();
+    
   }
 
   private createMessagesTable(): void {
@@ -245,14 +245,7 @@ export class DatabaseService {
     `);
   }
 
-  private createIndexes(): void {
-    this.db.execSync(`
-      CREATE INDEX IF NOT EXISTS idx_messages_chat_id ON messages(chat_id);
-      CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages(timestamp);
-      CREATE INDEX IF NOT EXISTS idx_chats_updated_at ON chats(updated_at);
-      CREATE INDEX IF NOT EXISTS idx_sync_queue_created_at ON sync_queue(created_at);
-    `);
-  }
+  
 
   // User methods
   async saveUser(user: User): Promise<void> {

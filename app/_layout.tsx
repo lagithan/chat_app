@@ -5,8 +5,8 @@ import { StatusBar } from 'expo-status-bar';
 import { View, ActivityIndicator, Text } from 'react-native';
 import { Colors } from '@/constants/Colors';
 import { DatabaseService } from '@/services/database/sqlite';
-import { initializeUser } from '@/services/firebase/config';
-import { useNotifications } from '@/hooks/useNotifications';
+import { initializeUser, getCurrentUserProfile } from '@/services/firebase/config';
+import { syncService } from '@/services/sync/syncService';
 
 export default function RootLayout() {
   const [isInitialized, setIsInitialized] = useState(false);
@@ -14,7 +14,7 @@ export default function RootLayout() {
   const [error, setError] = useState<string | null>(null);
   
   // Initialize notifications
-  const { requestPermissions } = useNotifications();
+  // const { requestPermissions } = useNotifications();
 
   useEffect(() => {
     initializeApp();
@@ -32,17 +32,22 @@ export default function RootLayout() {
       await initializeUser();
       console.log('Firebase user initialized');
 
-      // Request notification permissions
-      try {
-        const permissionGranted = await requestPermissions();
-        if (permissionGranted) {
-          console.log('Notification permissions granted');
-        } else {
-          console.log('Notification permissions denied');
-        }
-      } catch (error) {
-        console.log('Notification setup error (continuing anyway):', error);
-      }
+      // // Request notification permissions
+      // // const permissionGranted = await requestPermissions();
+      // if (permissionGranted) {
+      //   console.log('Notification permissions granted');
+      // } else {
+      //   console.log('Notification permissions denied');
+      // }
+
+      // Initialize sync service
+      const sync = syncService;
+      console.log('Sync service initialized');
+
+      // Set up periodic sync (in a real app, you might use background tasks)
+      setInterval(() => {
+        sync.backgroundSync();
+      }, 5 * 60 * 1000); // Every 5 minutes
 
       setIsInitialized(true);
       console.log('App initialization completed');
