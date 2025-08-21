@@ -24,7 +24,7 @@ export interface ChatSession {
   hostName: string;
   createdAt: any;
   isActive: boolean;
-  expiresAt: any;
+  // REMOVED expiresAt field completely
 }
 
 export interface Chat {
@@ -60,8 +60,8 @@ export class FirestoreService {
         hostId,
         hostName,
         createdAt: serverTimestamp(),
-        isActive: true,
-        expiresAt: new Date(Date.now() + 10 * 60 * 1000) // 10 minutes
+        isActive: true
+        // REMOVED expiresAt - NO EXPIRATION
       };
       
       const docRef = await addDoc(collection(db, 'chatSessions'), sessionData);
@@ -79,15 +79,7 @@ export class FirestoreService {
       
       if (sessionSnap.exists()) {
         const data = sessionSnap.data();
-        // Check if session is still valid (not expired)
-        const now = new Date();
-        const expiresAt = data.expiresAt?.toDate();
-        
-        if (expiresAt && now > expiresAt) {
-          // Session expired, delete it
-          await deleteDoc(sessionRef);
-          return null;
-        }
+        // REMOVED ALL EXPIRATION CHECKING - Just return the session
         
         return {
           id: sessionSnap.id,
@@ -107,7 +99,7 @@ export class FirestoreService {
     try {
       const session = await this.getQRSession(sessionId);
       if (!session) {
-        throw new Error('Session not found or expired');
+        throw new Error('Session not found'); // REMOVED "or expired"
       }
 
       const chatId = `chat_${sessionId}_${Date.now()}`;
@@ -125,9 +117,6 @@ export class FirestoreService {
 
       const chatRef = doc(db, 'chats', chatId);
       await setDoc(chatRef, chatData);
-
-      // Clean up the session
-      await deleteDoc(doc(db, 'chatSessions', sessionId));
 
       return chatId;
     } catch (error) {
@@ -168,15 +157,6 @@ export class FirestoreService {
       return chats;
     } catch (error) {
       console.error('Error getting user chats:', error);
-      
-      // If the query fails due to index issues, provide helpful error message
-      if (error instanceof Error && error.message.includes('index')) {
-        console.error('Firestore index required. Please create the required composite index:');
-        console.error('Collection: chats');
-        console.error('Fields: participants (Array-contains), isActive (Ascending), updatedAt (Descending)');
-        console.error('You can create it in the Firebase console or use the link provided in the error message.');
-      }
-      
       throw error;
     }
   }
@@ -213,16 +193,7 @@ export class FirestoreService {
           callback(chats);
         },
         (error) => {
-          console.error('Error in chat subscription:', error);
-          
-          // If the query fails due to index issues, provide helpful error message
-          if (error.message.includes('index')) {
-            console.error('Firestore index required. Please create the required composite index:');
-            console.error('Collection: chats');
-            console.error('Fields: participants (Array-contains), isActive (Ascending), updatedAt (Descending)');
-            console.error('You can create it in the Firebase console using the link provided in the error message.');
-          }
-          
+          console.error('Error in chat subscription:', error);  
           if (onError) {
             onError(error);
           }
@@ -376,28 +347,5 @@ export class FirestoreService {
     });
   }
 
-  // Cleanup expired sessions (call this periodically)
-  static async cleanupExpiredSessions(): Promise<void> {
-    try {
-      const now = Timestamp.now();
-      const q = query(
-        collection(db, 'chatSessions'),
-        where('expiresAt', '<', now)
-      );
-      
-      const querySnapshot = await getDocs(q);
-      const batch = writeBatch(db);
-      
-      querySnapshot.forEach((doc) => {
-        batch.delete(doc.ref);
-      });
-      
-      if (querySnapshot.size > 0) {
-        await batch.commit();
-        console.log(`Cleaned up ${querySnapshot.size} expired sessions`);
-      }
-    } catch (error) {
-      console.error('Error cleaning up expired sessions:', error);
-    }
-  }
+  // REMOVED cleanupExpiredSessions method completely - no expiration anymore
 }

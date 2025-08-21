@@ -1,11 +1,43 @@
 // services/database/sqlite.ts
 import * as SQLite from 'expo-sqlite';
-import { Message, Chat, User } from '@/types/chat';
+
+// Interfaces matching Firestore service
+export interface ChatSession {
+  id: string;
+  hostId: string;
+  hostName: string;
+  createdAt: any;
+  isActive: boolean;
+}
+
+export interface Chat {
+  id: string;
+  participants: string[];
+  participantNames: { [key: string]: string };
+  createdAt: any;
+  updatedAt: any;
+  lastMessage?: {
+    content: string;
+    timestamp: any;
+    senderId: string;
+  };
+  isActive: boolean;
+}
+
+export interface Message {
+  id: string;
+  chatId: string;
+  senderId: string;
+  senderName: string;
+  content: string;
+  timestamp: any;
+  type: string;
+  status: string;
+}
 
 export class DatabaseService {
   private static instance: DatabaseService;
-  public db: SQLite.SQLiteDatabase; // Make db public for direct access
-  private currentVersion = 2; // Increment this when schema changes
+  public db: SQLite.SQLiteDatabase;
 
   private constructor() {
     this.db = SQLite.openDatabaseSync('chatapp.db');
@@ -22,164 +54,21 @@ export class DatabaseService {
   private initDatabase() {
     try {
       this.db.execSync('PRAGMA journal_mode = WAL;');
-      
-      // Check current schema version
-      const version = this.getSchemaVersion();
-      
-      if (version < this.currentVersion) {
-        console.log(`Migrating database from version ${version} to ${this.currentVersion}`);
-        this.migrateDatabase(version);
-      } else {
-        // Create tables if they don't exist (fresh install)
-        this.createTables();
-      }
-      
-      // Update schema version
-      this.setSchemaVersion(this.currentVersion);
-      
+      this.createTables();
     } catch (error) {
       console.error('Database initialization error:', error);
-      // If there's any error, recreate the database
-      this.recreateDatabase();
-    }
-  }
-
-  private getSchemaVersion(): number {
-    try {
-      // Create schema_version table if it doesn't exist
-      this.db.execSync(`
-        CREATE TABLE IF NOT EXISTS schema_version (
-          version INTEGER PRIMARY KEY
-        );
-      `);
-      
-      const result = this.db.getFirstSync('SELECT version FROM schema_version ORDER BY version DESC LIMIT 1');
-      return result?.version || 0;
-    } catch (error) {
-      console.error('Error getting schema version:', error);
-      return 0;
-    }
-  }
-
-  private setSchemaVersion(version: number): void {
-    try {
-      this.db.runSync('DELETE FROM schema_version');
-      this.db.runSync('INSERT INTO schema_version (version) VALUES (?)', [version]);
-    } catch (error) {
-      console.error('Error setting schema version:', error);
-    }
-  }
-
-  private migrateDatabase(fromVersion: number): void {
-    try {
-      if (fromVersion < 1) {
-        // Migration from version 0 to 1
-        this.createTables();
-      }
-      
-      if (fromVersion < 2) {
-        // Migration from version 1 to 2 - ensure proper column names
-        this.fixColumnNames();
-      }
-      
-      // Add more migrations here as needed
-      
-    } catch (error) {
-      console.error('Database migration error:', error);
-      // If migration fails, recreate database
-      this.recreateDatabase();
-    }
-  }
-
-  private fixColumnNames(): void {
-    try {
-      // Check if messages table exists and has correct columns
-      const tableInfo = this.db.getAllSync("PRAGMA table_info(messages)");
-      const columnNames = tableInfo.map((col: any) => col.name);
-      
-      if (!columnNames.includes('chat_id')) {
-        console.log('Recreating messages table with correct schema...');
-        
-        // Backup existing data if any
-        let existingMessages: any[] = [];
-        try {
-          existingMessages = this.db.getAllSync('SELECT * FROM messages');
-        } catch (e) {
-          // Table might not exist or be corrupted
-          console.log('No existing messages to backup');
-        }
-        
-        // Drop and recreate messages table
-        this.db.execSync('DROP TABLE IF EXISTS messages');
-        this.createMessagesTable();
-        
-        // Restore data if we had any
-        if (existingMessages.length > 0) {
-          console.log(`Restoring ${existingMessages.length} messages...`);
-          for (const msg of existingMessages) {
-            try {
-              this.db.runSync(
-                `INSERT INTO messages 
-                 (id, chat_id, sender_id, sender_name, content, timestamp, type, status, local_timestamp) 
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-                [
-                  msg.id || `msg_${Date.now()}_${Math.random()}`,
-                  msg.chatId || msg.chat_id || 'unknown',
-                  msg.senderId || msg.sender_id || 'unknown',
-                  msg.senderName || msg.sender_name || 'Unknown',
-                  msg.content || '',
-                  msg.timestamp || new Date().toISOString(),
-                  msg.type || 'text',
-                  msg.status || 'sent',
-                  new Date().toISOString()
-                ]
-              );
-            } catch (e) {
-              console.error('Error restoring message:', e);
-            }
-          }
-        }
-      }
-    } catch (error) {
-      console.error('Error fixing column names:', error);
-    }
-  }
-
-  private recreateDatabase(): void {
-    try {
-      console.log('Recreating database with fresh schema...');
-      
-      // Drop all tables
-      this.db.execSync(`
-        DROP TABLE IF EXISTS messages;
-        DROP TABLE IF EXISTS chats;
-        DROP TABLE IF EXISTS users;
-        DROP TABLE IF EXISTS push_tokens;
-        DROP TABLE IF EXISTS sync_queue;
-        DROP TABLE IF EXISTS schema_version;
-      `);
-      
-      // Create fresh tables
-      this.createTables();
-      this.setSchemaVersion(this.currentVersion);
-      
-    } catch (error) {
-      console.error('Error recreating database:', error);
-      throw error;
     }
   }
 
   private createTables(): void {
-    // Users table
+    // Chat Sessions table
     this.db.execSync(`
-      CREATE TABLE IF NOT EXISTS users (
+      CREATE TABLE IF NOT EXISTS chat_sessions (
         id TEXT PRIMARY KEY,
-        name TEXT NOT NULL,
-        profile_image TEXT,
-        device_id TEXT UNIQUE,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        last_seen DATETIME,
-        is_online INTEGER DEFAULT 0
+        host_id TEXT NOT NULL,
+        host_name TEXT NOT NULL,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        is_active INTEGER DEFAULT 1
       );
     `);
 
@@ -190,44 +79,15 @@ export class DatabaseService {
         participants TEXT NOT NULL,
         participant_names TEXT NOT NULL,
         last_message_content TEXT,
-        last_message_timestamp DATETIME,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        is_active INTEGER DEFAULT 1,
-        unread_count INTEGER DEFAULT 0
+        last_message_timestamp TEXT,
+        last_message_sender_id TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        is_active INTEGER DEFAULT 1
       );
     `);
 
     // Messages table
-    this.createMessagesTable();
-
-    // Push tokens table
-    this.db.execSync(`
-      CREATE TABLE IF NOT EXISTS push_tokens (
-        user_id TEXT PRIMARY KEY,
-        token TEXT NOT NULL,
-        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-      );
-    `);
-
-    // Sync queue table
-    this.db.execSync(`
-      CREATE TABLE IF NOT EXISTS sync_queue (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        operation TEXT NOT NULL,
-        table_name TEXT NOT NULL,
-        record_id TEXT NOT NULL,
-        data TEXT NOT NULL,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        retry_count INTEGER DEFAULT 0
-      );
-    `);
-
-    // Create indexes
-    
-  }
-
-  private createMessagesTable(): void {
     this.db.execSync(`
       CREATE TABLE IF NOT EXISTS messages (
         id TEXT PRIMARY KEY,
@@ -235,78 +95,106 @@ export class DatabaseService {
         sender_id TEXT NOT NULL,
         sender_name TEXT NOT NULL,
         content TEXT NOT NULL,
-        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+        timestamp TEXT DEFAULT CURRENT_TIMESTAMP,
         type TEXT DEFAULT 'text',
         status TEXT DEFAULT 'sent',
-        is_read INTEGER DEFAULT 0,
-        local_timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (chat_id) REFERENCES chats (id)
       );
     `);
+
   }
 
-  
-
-  // User methods
-  async saveUser(user: User): Promise<void> {
+  // Helper method to safely convert dates
+  private safeConvertDate(date: any): string {
+    if (!date) return new Date().toISOString();
+    
     try {
-      this.db.runSync(
-        `INSERT OR REPLACE INTO users 
-         (id, name, profile_image, device_id, created_at, last_seen, is_online) 
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        [
-          user.id,
-          user.name,
-          user.profileImage || null,
-          user.deviceId,
-          user.createdAt || new Date().toISOString(),
-          new Date().toISOString(),
-          1
-        ]
-      );
+      // Handle Firestore Timestamp
+      if (date && typeof date === 'object' && 'toDate' in date) {
+        return date.toDate().toISOString();
+      }
+      // Handle Date object
+      if (date instanceof Date) {
+        if (isNaN(date.getTime())) {
+          return new Date().toISOString();
+        }
+        return date.toISOString();
+      }
+      // Handle string date
+      if (typeof date === 'string') {
+        const parsed = new Date(date);
+        if (isNaN(parsed.getTime())) {
+          return new Date().toISOString();
+        }
+        return parsed.toISOString();
+      }
+      // Default to current date
+      return new Date().toISOString();
     } catch (error) {
-      console.error('Error saving user:', error);
-      throw error;
+      console.error('Error converting date:', error);
+      return new Date().toISOString();
     }
   }
 
-  async getUser(id: string): Promise<User | null> {
-    try {
-      const result = this.db.getFirstSync('SELECT * FROM users WHERE id = ?', [id]);
-      return result ? this.mapRowToUser(result) : null;
-    } catch (error) {
-      console.error('Error getting user:', error);
-      return null;
-    }
-  }
+  // Add this method to your DatabaseService class in services/database/sqlite.ts
 
-  async updateUserLastSeen(userId: string): Promise<void> {
-    try {
-      this.db.runSync(
-        'UPDATE users SET last_seen = ?, is_online = 1 WHERE id = ?',
-        [new Date().toISOString(), userId]
-      );
-    } catch (error) {
-      console.error('Error updating user last seen:', error);
-    }
+public async resetDatabase(): Promise<void> {
+  try {
+    // Drop all tables
+    this.db.execSync('DROP TABLE IF EXISTS messages;');
+    this.db.execSync('DROP TABLE IF EXISTS chats;');
+    this.db.execSync('DROP TABLE IF EXISTS chat_sessions;');
+    
+    // Recreate tables with new structure
+    this.createTables();
+    
+    console.log('Database reset successfully');
+  } catch (error) {
+    console.error('Error resetting database:', error);
+    throw error;
   }
+}
 
-  // Chat methods
+// Alternative method if you just want to clear data but keep table structure
+public async clearAllData(): Promise<void> {
+  try {
+    // Clear all data but keep table structure
+    this.db.execSync('DELETE FROM messages;');
+    this.db.execSync('DELETE FROM chats;');
+    this.db.execSync('DELETE FROM chat_sessions;');
+    
+    // Reset auto-increment counters if any
+    this.db.execSync('DELETE FROM sqlite_sequence WHERE name IN ("messages", "chats", "chat_sessions");');
+    
+    console.log('All data cleared successfully');
+  } catch (error) {
+    console.error('Error clearing data:', error);
+    throw error;
+  }
+}
+
+  // Chat Management (matching Firestore methods)
   async saveChat(chat: Chat): Promise<void> {
     try {
+      const createdAt = this.safeConvertDate(chat.createdAt);
+      const updatedAt = this.safeConvertDate(chat.updatedAt);
+      const lastMessageTimestamp = chat.lastMessage?.timestamp ? 
+        this.safeConvertDate(chat.lastMessage.timestamp) : null;
+
       this.db.runSync(
         `INSERT OR REPLACE INTO chats 
          (id, participants, participant_names, last_message_content, 
-          last_message_timestamp, created_at, updated_at, is_active) 
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          last_message_timestamp, last_message_sender_id, created_at, updated_at, is_active) 
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           chat.id,
           JSON.stringify(chat.participants),
           JSON.stringify(chat.participantNames),
           chat.lastMessage?.content || null,
-          chat.lastMessage?.timestamp ? new Date(chat.lastMessage.timestamp).toISOString() : null,
-          chat.createdAt ? new Date(chat.createdAt).toISOString() : new Date().toISOString(),
-          chat.updatedAt ? new Date(chat.updatedAt).toISOString() : new Date().toISOString(),
+          lastMessageTimestamp,
+          chat.lastMessage?.senderId || null,
+          createdAt,
+          updatedAt,
           chat.isActive ? 1 : 0
         ]
       );
@@ -315,6 +203,7 @@ export class DatabaseService {
       throw error;
     }
   }
+
 
   async getAllChats(): Promise<Chat[]> {
     try {
@@ -326,99 +215,65 @@ export class DatabaseService {
       
       return chats.map(chat => this.mapRowToChat(chat));
     } catch (error) {
-      console.error('Error getting chats:', error);
+      console.error('Error getting all chats:', error);
       return [];
     }
   }
 
-  async getChatById(chatId: string): Promise<Chat | null> {
+ 
+  async getUserChats(userId: string): Promise<Chat[]> {
     try {
-      const result = this.db.getFirstSync('SELECT * FROM chats WHERE id = ?', [chatId]);
-      return result ? this.mapRowToChat(result) : null;
+      const chats = this.db.getAllSync(`
+        SELECT * FROM chats 
+        WHERE is_active = 1 
+        AND participants LIKE ?
+        ORDER BY updated_at DESC
+      `, [`%"${userId}"%`]);
+      
+      return chats.map(chat => this.mapRowToChat(chat))
+        .filter(chat => chat.participants.includes(userId));
     } catch (error) {
-      console.error('Error getting chat by id:', error);
-      return null;
+      console.error('Error getting user chats:', error);
+      return [];
     }
   }
 
-  async updateChatLastMessage(chatId: string, message: Message): Promise<void> {
+  // Message Management (matching Firestore methods)
+  async sendMessage(chatId: string, senderId: string, senderName: string, content: string): Promise<void> {
     try {
+      const messageId = `msg_${Date.now()}_${Math.random()}`;
+      const now = new Date().toISOString();
+      
+      // Add message
+      this.db.runSync(
+        `INSERT INTO messages 
+         (id, chat_id, sender_id, sender_name, content, timestamp, type, status) 
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [messageId, chatId, senderId, senderName, content, now, 'text', 'sent']
+      );
+
+      // Update chat's last message
       this.db.runSync(
         `UPDATE chats 
          SET last_message_content = ?, 
              last_message_timestamp = ?, 
+             last_message_sender_id = ?,
              updated_at = ? 
          WHERE id = ?`,
-        [
-          message.content,
-          new Date(message.timestamp).toISOString(),
-          new Date().toISOString(),
-          chatId
-        ]
+        [content, now, senderId, now, chatId]
       );
     } catch (error) {
-      console.error('Error updating chat last message:', error);
-    }
-  }
-
-  async incrementUnreadCount(chatId: string): Promise<void> {
-    try {
-      this.db.runSync(
-        'UPDATE chats SET unread_count = unread_count + 1 WHERE id = ?',
-        [chatId]
-      );
-    } catch (error) {
-      console.error('Error incrementing unread count:', error);
-    }
-  }
-
-  async clearUnreadCount(chatId: string): Promise<void> {
-    try {
-      this.db.runSync(
-        'UPDATE chats SET unread_count = 0 WHERE id = ?',
-        [chatId]
-      );
-    } catch (error) {
-      console.error('Error clearing unread count:', error);
-    }
-  }
-
-  // Message methods
-  async saveMessage(message: Message): Promise<void> {
-    try {
-      this.db.runSync(
-        `INSERT OR REPLACE INTO messages 
-         (id, chat_id, sender_id, sender_name, content, timestamp, type, status, local_timestamp) 
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          message.id,
-          message.chatId,
-          message.senderId,
-          message.senderName,
-          message.content,
-          new Date(message.timestamp).toISOString(),
-          message.type || 'text',
-          message.status || 'sent',
-          new Date().toISOString()
-        ]
-      );
-
-      // Update chat's last message
-      await this.updateChatLastMessage(message.chatId, message);
-    } catch (error) {
-      console.error('Error saving message:', error);
+      console.error('Error sending message:', error);
       throw error;
     }
   }
 
-  async getMessagesForChat(chatId: string, limit?: number): Promise<Message[]> {
+  async getMessagesForChat(chatId: string): Promise<Message[]> {
     try {
-      const limitClause = limit ? `LIMIT ${limit}` : '';
       const messages = this.db.getAllSync(
         `SELECT * FROM messages 
          WHERE chat_id = ? 
-         ORDER BY timestamp ASC 
-         ${limitClause}`,
+         ORDER BY timestamp ASC`,
         [chatId]
       );
       
@@ -429,159 +284,21 @@ export class DatabaseService {
     }
   }
 
-  async updateMessageStatus(messageId: string, status: Message['status']): Promise<void> {
-    try {
-      this.db.runSync(
-        'UPDATE messages SET status = ? WHERE id = ?',
-        [status, messageId]
-      );
-    } catch (error) {
-      console.error('Error updating message status:', error);
-    }
-  }
+  
 
-  async markMessagesAsRead(chatId: string, userId: string): Promise<void> {
+  
+  // Helper method
+  public async getChatById(chatId: string): Promise<Chat | null> {
     try {
-      this.db.runSync(
-        'UPDATE messages SET is_read = 1 WHERE chat_id = ? AND sender_id != ?',
-        [chatId, userId]
-      );
-      
-      await this.clearUnreadCount(chatId);
+      const result = this.db.getFirstSync('SELECT * FROM chats WHERE id = ?', [chatId]);
+      return result ? this.mapRowToChat(result) : null;
     } catch (error) {
-      console.error('Error marking messages as read:', error);
-    }
-  }
-
-  // Push token methods
-  async savePushToken(userId: string, token: string): Promise<void> {
-    try {
-      this.db.runSync(
-        `INSERT OR REPLACE INTO push_tokens (user_id, token, updated_at) 
-         VALUES (?, ?, ?)`,
-        [userId, token, new Date().toISOString()]
-      );
-    } catch (error) {
-      console.error('Error saving push token:', error);
-    }
-  }
-
-  async getPushToken(userId: string): Promise<string | null> {
-    try {
-      const result = this.db.getFirstSync(
-        'SELECT token FROM push_tokens WHERE user_id = ?',
-        [userId]
-      );
-      return result?.token || null;
-    } catch (error) {
-      console.error('Error getting push token:', error);
+      console.error('Error getting chat by id:', error);
       return null;
     }
   }
 
-  // Sync queue methods for offline support
-  async addToSyncQueue(operation: string, tableName: string, recordId: string, data: any): Promise<void> {
-    try {
-      this.db.runSync(
-        `INSERT INTO sync_queue (operation, table_name, record_id, data) 
-         VALUES (?, ?, ?, ?)`,
-        [operation, tableName, recordId, JSON.stringify(data)]
-      );
-    } catch (error) {
-      console.error('Error adding to sync queue:', error);
-    }
-  }
-
-  async getSyncQueue(): Promise<Array<{ id: number; operation: string; tableName: string; recordId: string; data: any }>> {
-    try {
-      const items = this.db.getAllSync(`
-        SELECT * FROM sync_queue 
-        ORDER BY created_at ASC 
-        LIMIT 50
-      `);
-      
-      return items.map(item => ({
-        id: item.id,
-        operation: item.operation,
-        tableName: item.table_name,
-        recordId: item.record_id,
-        data: JSON.parse(item.data)
-      }));
-    } catch (error) {
-      console.error('Error getting sync queue:', error);
-      return [];
-    }
-  }
-
-  async removeSyncQueueItem(id: number): Promise<void> {
-    try {
-      this.db.runSync('DELETE FROM sync_queue WHERE id = ?', [id]);
-    } catch (error) {
-      console.error('Error removing sync queue item:', error);
-    }
-  }
-
-  async clearSyncQueue(): Promise<void> {
-    try {
-      this.db.runSync('DELETE FROM sync_queue');
-    } catch (error) {
-      console.error('Error clearing sync queue:', error);
-    }
-  }
-
-  // Search methods
-  async searchMessages(query: string, chatId?: string): Promise<Message[]> {
-    try {
-      const whereClause = chatId ? 'AND chat_id = ?' : '';
-      const params = chatId ? [`%${query}%`, chatId] : [`%${query}%`];
-      
-      const messages = this.db.getAllSync(
-        `SELECT * FROM messages 
-         WHERE content LIKE ? ${whereClause}
-         ORDER BY timestamp DESC 
-         LIMIT 50`,
-        params
-      );
-      
-      return messages.map(message => this.mapRowToMessage(message));
-    } catch (error) {
-      console.error('Error searching messages:', error);
-      return [];
-    }
-  }
-
-  // Database maintenance
-  async vacuum(): Promise<void> {
-    try {
-      this.db.execSync('VACUUM');
-    } catch (error) {
-      console.error('Error vacuuming database:', error);
-    }
-  }
-
-  async deleteOldMessages(days: number = 30): Promise<void> {
-    try {
-      const cutoffDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
-      this.db.runSync(
-        'DELETE FROM messages WHERE timestamp < ?',
-        [cutoffDate]
-      );
-    } catch (error) {
-      console.error('Error deleting old messages:', error);
-    }
-  }
-
-  // Helper methods to map database rows to objects
-  private mapRowToUser(row: any): User {
-    return {
-      id: row.id,
-      name: row.name,
-      profileImage: row.profile_image,
-      deviceId: row.device_id,
-      createdAt: row.created_at
-    };
-  }
-
+  
   private mapRowToChat(row: any): Chat {
     return {
       id: row.id,
@@ -590,7 +307,7 @@ export class DatabaseService {
       lastMessage: row.last_message_content ? {
         content: row.last_message_content,
         timestamp: row.last_message_timestamp,
-        senderId: ''
+        senderId: row.last_message_sender_id || ''
       } : undefined,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
@@ -606,8 +323,8 @@ export class DatabaseService {
       senderName: row.sender_name,
       content: row.content,
       timestamp: row.timestamp,
-      type: row.type as Message['type'],
-      status: row.status as Message['status']
+      type: row.type,
+      status: row.status
     };
   }
 }

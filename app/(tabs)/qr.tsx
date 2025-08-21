@@ -18,6 +18,8 @@ import { Colors } from '@/constants/Colors';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { router } from 'expo-router';
 import { FirestoreService } from '@/services/firebase/firestore';
+import { DatabaseService } from '@/services/database/sqlite';
+import { useFocusEffect } from '@react-navigation/native';
 
 export default function QRTab() {
   const [hasPermission, setHasPermission] = useState<boolean | null>(null);
@@ -27,11 +29,21 @@ export default function QRTab() {
   const [userProfile, setUserProfile] = useState<any>(null);
   const [sessionId, setSessionId] = useState<string>('');
   const [loading, setLoading] = useState(false);
+  const db = DatabaseService.getInstance();
 
   useEffect(() => {
     requestPermissions();
     loadUserProfile();
   }, []);
+
+  useFocusEffect(
+    React.useCallback(() => {
+      setQrValue('');
+      setSessionId('');
+      setScanning(false);
+      setLoading(false);
+    }, [])
+  );
 
   const requestPermissions = async () => {
     const { status } = await Camera.requestCameraPermissionsAsync();
@@ -57,7 +69,7 @@ export default function QRTab() {
 
     setGenerating(true);
     try {
-      // Create session in Firebase
+      // Create session in Firebase (no expiration)
       const newSessionId = await FirestoreService.createQRSession(
         userProfile.id,
         userProfile.name
@@ -82,74 +94,131 @@ export default function QRTab() {
   };
 
   const handleQRScan = async (data: string) => {
-    if (loading) return; // Prevent multiple scans
+  if (loading) return; // Prevent multiple scans
+  
+  setLoading(true);
+  
+  try {
+    const sessionData = JSON.parse(data);
     
-    setLoading(true);
-    
-    try {
-      const sessionData = JSON.parse(data);
+    if (sessionData.type === 'chat_session') {
+      Vibration.vibrate(100);
       
-      if (sessionData.type === 'chat_session') {
-        Vibration.vibrate(100);
-        setScanning(false);
-        
-        // Check if user is trying to scan their own QR
-        if (sessionData.hostId === userProfile?.id) {
-          Alert.alert('Error', 'You cannot join your own chat session');
-          setLoading(false);
-          return;
-        }
-        
-        // Show connection request modal
+      // Check if user is trying to scan their own QR
+      if (sessionData.hostId === userProfile?.id) {
         Alert.alert(
-          'Chat Request',
-          `${sessionData.hostName} wants to start a chat with you. Accept?`,
+          'Error', 
+          'You cannot join your own chat session',
           [
-            { 
-              text: 'Decline', 
-              style: 'cancel',
-              onPress: () => setLoading(false)
-            },
-            { 
-              text: 'Accept', 
-              onPress: () => joinChatSession(sessionData)
+            {
+              text: 'OK',
+              onPress: () => {
+                setLoading(false);
+                setScanning(false);
+              }
             }
           ]
         );
-      } else {
-        Alert.alert('Error', 'Invalid QR code format');
-        setLoading(false);
-      }
-    } catch (error) {
-      console.error('Error parsing QR code:', error);
-      Alert.alert('Error', 'Invalid QR code');
-      setLoading(false);
-    }
-  };
-
-  const joinChatSession = async (sessionData: any) => {
-    try {
-      if (!userProfile) {
-        Alert.alert('Error', 'User profile not found');
         return;
       }
-
-      // Create chat from session in Firebase
-      const chatId = await FirestoreService.createChatFromSession(
-        sessionData.sessionId,
-        userProfile.id,
-        userProfile.name
+      
+      // Show connection request modal
+      Alert.alert(
+        'Chat Request',
+        `${sessionData.hostName} wants to start a chat with you. Accept?`,
+        [
+          {
+            text: 'Decline',
+            style: 'cancel',
+            onPress: () => {
+              setLoading(false);
+              setScanning(false);
+            }
+          },
+          {
+            text: 'Accept',
+            onPress: () => {
+              setScanning(false);
+              joinChatSession(sessionData);
+            }
+          }
+        ]
       );
-
-      // Navigate to chat
-      router.push(`/chat/${chatId}`);
-    } catch (error) {
-      console.error('Error joining chat session:', error);
-      Alert.alert('Error', 'Failed to join chat session. The session may have expired.');
-    } finally {
-      setLoading(false);
+    } else {
+      Alert.alert(
+        'Error', 
+        'Invalid QR code format',
+        [
+          {
+            text: 'OK',
+            onPress: () => {
+              setLoading(false);
+              setScanning(false);
+            }
+          }
+        ]
+      );
     }
-  };
+  } catch (error) {
+    console.error('Error parsing QR code:', error);
+    Alert.alert(
+      'Error', 
+      'Invalid QR code',
+      [
+        {
+          text: 'OK',
+          onPress: () => {
+            setLoading(false);
+            setScanning(false);
+          }
+        }
+      ]
+    );
+  }
+};
+
+const joinChatSession = async (sessionData: any) => {
+  try {
+    if (!userProfile) {
+      Alert.alert('Error', 'User profile not found');
+      return;
+    }
+
+    // Create chat from session in Firebase
+    const chatId = await FirestoreService.createChatFromSession(
+      sessionData.sessionId,
+      userProfile.id,
+      userProfile.name
+    );
+
+    // Save chat to SQLite local database
+    const chatData = {
+      id: chatId,
+      participants: [sessionData.hostId, userProfile.id],
+      participantNames: {
+        [sessionData.hostId]: sessionData.hostName,
+        [userProfile.id]: userProfile.name
+      },
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      isActive: true
+    };
+    
+    await db.saveChat(chatData);
+
+    // Navigate to chat
+    router.push(`/chat/${chatId}`);
+  } catch (error) {
+    console.error('Error joining chat session:', error);
+    let errorMsg = 'Failed to join chat session. Please try again.';
+    if (error?.message === 'Session not found') {
+      errorMsg = 'Chat session not found or already used. Please scan a new QR code.';
+    }
+    Alert.alert('Error', errorMsg);
+  } finally {
+    setLoading(false);
+  }
+};
 
   const closeQRCode = () => {
     setQrValue('');
@@ -185,42 +254,9 @@ export default function QRTab() {
       </View>
 
       <View style={styles.content}>
-        <View style={styles.actionButtons}>
-          <TouchableOpacity 
-            style={[styles.actionButton, styles.generateButton]}
-            onPress={generateQR}
-            disabled={generating}
-          >
-            {generating ? (
-              <ActivityIndicator color={Colors.textLight} />
-            ) : (
-              <Ionicons name="qr-code" size={32} color={Colors.textLight} />
-            )}
-            <Text style={styles.actionButtonText}>
-              {generating ? 'Generating...' : 'Generate QR'}
-            </Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity 
-            style={[styles.actionButton, styles.scanButton]}
-            onPress={() => setScanning(true)}
-            disabled={loading}
-          >
-            {loading ? (
-              <ActivityIndicator color={Colors.primary} />
-            ) : (
-              <Ionicons name="scan" size={32} color={Colors.primary} />
-            )}
-            <Text style={[styles.actionButtonText, { color: Colors.primary }]}>
-              {loading ? 'Joining...' : 'Scan QR'}
-            </Text>
-          </TouchableOpacity>
-        </View>
-
-        {qrValue && !scanning && (
+        {qrValue && !scanning ? (
           <View style={styles.qrContainer}>
             <Text style={styles.qrTitle}>Share this QR code to start chatting</Text>
-            <Text style={styles.qrSubtitle}>QR code expires in 10 minutes</Text>
             <View style={styles.qrWrapper}>
               <QRCode
                 value={qrValue}
@@ -236,7 +272,47 @@ export default function QRTab() {
               <Text style={styles.closeButtonText}>Close</Text>
             </TouchableOpacity>
           </View>
+        ) : (
+          <View style={styles.placeholderContainer}>
+            <Ionicons name="qr-code-outline" size={80} color={Colors.textSecondary} />
+            <Text style={styles.placeholderTitle}>Ready to Connect?</Text>
+            <Text style={styles.placeholderText}>
+              Generate a QR code to share or scan one to join a chat session.
+            </Text>
+          </View>
         )}
+      </View>
+
+      <View style={styles.bottomActions}>
+        <TouchableOpacity 
+          style={[styles.actionButton, styles.generateButton]}
+          onPress={generateQR}
+          disabled={generating}
+        >
+          {generating ? (
+            <ActivityIndicator color={Colors.textLight} />
+          ) : (
+            <Ionicons name="qr-code" size={32} color={Colors.textLight} />
+          )}
+          <Text style={styles.actionButtonText}>
+            {generating ? 'Generating...' : 'Generate QR'}
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity 
+          style={[styles.actionButton, styles.scanButton]}
+          onPress={() => setScanning(true)}
+          disabled={loading}
+        >
+          {loading ? (
+            <ActivityIndicator color={Colors.primary} />
+          ) : (
+            <Ionicons name="scan" size={32} color={Colors.primary} />
+          )}
+          <Text style={[styles.actionButtonText, { color: Colors.primary }]}>
+            {loading ? 'Joining...' : 'Scan QR'}
+          </Text>
+        </TouchableOpacity>
       </View>
 
       {/* QR Scanner Modal */}
@@ -317,48 +393,79 @@ const styles = StyleSheet.create({
   content: {
     flex: 1,
     padding: 20,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
-  actionButtons: {
+  placeholderContainer: {
+    alignItems: 'center',
+    padding: 40,
+  },
+  placeholderTitle: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    color: Colors.text,
+    marginTop: 20,
+    marginBottom: 10,
+  },
+  placeholderText: {
+    fontSize: 16,
+    color: Colors.textSecondary,
+    textAlign: 'center',
+    maxWidth: 280,
+  },
+  bottomActions: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    marginBottom: 40,
+    paddingHorizontal: 20,
+    paddingVertical: 16,
+    borderTopColor: Colors.border,
+    elevation: 4,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: -2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
   },
   actionButton: {
     flex: 1,
+    flexDirection: 'row',
     alignItems: 'center',
-    padding: 20,
+    justifyContent: 'center',
+    padding: 16,
     borderRadius: 16,
     marginHorizontal: 8,
+    elevation: 2,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
   },
   generateButton: {
     backgroundColor: Colors.primary,
   },
   scanButton: {
-    backgroundColor: Colors.surface,
+    backgroundColor: Colors.background,
     borderWidth: 2,
     borderColor: Colors.primary,
   },
   actionButtonText: {
     fontSize: 16,
     fontWeight: '600',
-    marginTop: 8,
+    marginLeft: 8,
     color: Colors.textLight,
   },
   qrContainer: {
     alignItems: 'center',
-    backgroundColor: Colors.surface,
     borderRadius: 20,
     padding: 30,
+    elevation: 4,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
   },
   qrTitle: {
     fontSize: 16,
     color: Colors.text,
-    textAlign: 'center',
-    marginBottom: 8,
-  },
-  qrSubtitle: {
-    fontSize: 12,
-    color: Colors.textSecondary,
     textAlign: 'center',
     marginBottom: 20,
   },
@@ -367,9 +474,14 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.background,
     borderRadius: 16,
     marginBottom: 20,
+    elevation: 2,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 2,
   },
   closeButton: {
-    backgroundColor: Colors.textSecondary,
+    backgroundColor: Colors.primary,
     paddingHorizontal: 24,
     paddingVertical: 12,
     borderRadius: 20,
@@ -400,6 +512,7 @@ const styles = StyleSheet.create({
     fontSize: 18,
     marginBottom: 40,
     textAlign: 'center',
+    paddingHorizontal: 20,
   },
   scanArea: {
     width: 250,

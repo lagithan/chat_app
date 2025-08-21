@@ -6,7 +6,7 @@ import { View, ActivityIndicator, Text } from 'react-native';
 import { Colors } from '@/constants/Colors';
 import { DatabaseService } from '@/services/database/sqlite';
 import { initializeUser, getCurrentUserProfile } from '@/services/firebase/config';
-import { syncService } from '@/services/sync/syncService';
+
 
 export default function RootLayout() {
   const [isInitialized, setIsInitialized] = useState(false);
@@ -40,15 +40,7 @@ export default function RootLayout() {
       //   console.log('Notification permissions denied');
       // }
 
-      // Initialize sync service
-      const sync = syncService;
-      console.log('Sync service initialized');
-
-      // Set up periodic sync (in a real app, you might use background tasks)
-      setInterval(() => {
-        sync.backgroundSync();
-      }, 5 * 60 * 1000); // Every 5 minutes
-
+      
       setIsInitialized(true);
       console.log('App initialization completed');
       

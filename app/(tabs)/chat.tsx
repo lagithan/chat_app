@@ -15,34 +15,56 @@ import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '@/constants/Colors';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { FirestoreService, Chat } from '@/services/firebase/firestore';
+import { DatabaseService } from '@/services/database/sqlite';
 
 export default function ChatTab() {
   const [chats, setChats] = useState<Chat[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [userProfile, setUserProfile] = useState<any>(null);
+  const db = DatabaseService.getInstance();
 
   useEffect(() => {
     loadUserProfile();
+    loadChats();
   }, []);
 
   useFocusEffect(
-    React.useCallback(() => {
-      if (userProfile) {
-        loadChats();
-        // Set up real-time listener
-        const unsubscribe = FirestoreService.subscribeToUserChats(
-          userProfile.id,
-          (updatedChats) => {
-            setChats(updatedChats);
-            setLoading(false);
+  React.useCallback(() => {
+    if (userProfile) {
+      loadChats();
+      // Set up real-time listener
+      const unsubscribe = FirestoreService.subscribeToUserChats(
+        userProfile.id,
+        async (updatedChats) => {
+          // Save each chat to SQLite
+          for (const chat of updatedChats) {
+            await db.saveChat(chat);
           }
-        );
+          
+          // Simple merge: combine and deduplicate by chat ID
+          setChats(prevChats => {
+            const chatMap = new Map();
+            
+            // Add existing chats to map
+            prevChats.forEach(chat => chatMap.set(chat.id, chat));
+            
+            // Add/update with new chats (this will overwrite existing ones if they exist)
+            updatedChats.forEach(chat => chatMap.set(chat.id, chat));
+            
+            // Convert back to array and sort
+            const mergedChats = Array.from(chatMap.values());
+            return mergedChats.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+          });
+          
+          setLoading(false);
+        }
+      );
 
-        return () => unsubscribe?.();
-      }
-    }, [userProfile])
-  );
+      return () => unsubscribe?.();
+    }
+  }, [userProfile])
+);
 
   const loadUserProfile = async () => {
     try {
@@ -59,10 +81,27 @@ export default function ChatTab() {
     if (!userProfile) return;
 
     try {
-      const userChats = await FirestoreService.getUserChats(userProfile.id);
-      setChats(userChats);
+      // First try to load from local SQLite
+      const localChats = await db.getAllChats();
+      if (localChats.length > 0) {
+        setChats(localChats);
+        setLoading(false);
+      }
+
+      // If local chats are empty, load from Firebase
+      // const userChats = await FirestoreService.getUserChats(userProfile.id);
+      
+      
+      // for (const chat of userChats) {
+      //   await db.saveChat(chat);
+      //  }
+      
+      //  setChats(userChats);
     } catch (error) {
       console.error('Error loading chats:', error);
+      // If Firebase fails, at least show local chats
+      const localChats = await db.getAllChats();
+      setChats(localChats);
     } finally {
       setLoading(false);
     }
