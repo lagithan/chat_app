@@ -12,6 +12,8 @@ import {
   KeyboardAvoidingView,
   Platform,
   Alert,
+  Animated,
+  Easing,
 } from 'react-native';
 import { useLocalSearchParams, router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -35,6 +37,25 @@ export default function ChatPage() {
   const db = DatabaseService.getInstance();
   const flatListRef = useRef<FlatList>(null);
   const typingTimeoutRef = useRef<NodeJS.Timeout>();
+
+  const dotPosition1 = useRef(new Animated.Value(0)).current;
+  const dotPosition2 = useRef(new Animated.Value(0)).current;
+  const dotPosition3 = useRef(new Animated.Value(0)).current;
+
+  const translateY1 = dotPosition1.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, -5],
+  });
+  const translateY2 = dotPosition2.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, -5],
+  });
+  const translateY3 = dotPosition3.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, -5],
+  });
+
+  const typingAnimationRef = useRef<{anim1?: Animated.CompositeAnimation, anim2?: Animated.CompositeAnimation, anim3?: Animated.CompositeAnimation}>({});
 
   useEffect(() => {
     loadUserProfile();
@@ -92,6 +113,57 @@ export default function ChatPage() {
       };
     }
   }, [chatInfo, userProfile]);
+
+  useEffect(() => {
+    const animateDot = (dot: Animated.Value | Animated.ValueXY, delay: number) => {
+      const animation = Animated.loop(
+        Animated.sequence([
+          Animated.delay(delay),
+          Animated.timing(dot, {
+            toValue: 1,
+            duration: 250,
+            easing: Easing.out(Easing.ease),
+            useNativeDriver: true,
+          }),
+          Animated.timing(dot, {
+            toValue: 0,
+            duration: 250,
+            easing: Easing.in(Easing.ease),
+            useNativeDriver: true,
+          }),
+          Animated.delay(500),
+        ])
+      );
+      animation.start();
+      return animation;
+    };
+
+    if (otherUserTyping) {
+      const anim1 = animateDot(dotPosition1, 0);
+      const anim2 = animateDot(dotPosition2, 200);
+      const anim3 = animateDot(dotPosition3, 400);
+      typingAnimationRef.current = { anim1, anim2, anim3 };
+    } else {
+      typingAnimationRef.current.anim1?.stop();
+      typingAnimationRef.current.anim2?.stop();
+      typingAnimationRef.current.anim3?.stop();
+      dotPosition1.setValue(0);
+      dotPosition2.setValue(0);
+      dotPosition3.setValue(0);
+    }
+
+    return () => {
+      typingAnimationRef.current.anim1?.stop();
+      typingAnimationRef.current.anim2?.stop();
+      typingAnimationRef.current.anim3?.stop();
+    };
+  }, [otherUserTyping]);
+
+  useEffect(() => {
+    if (otherUserTyping) {
+      flatListRef.current?.scrollToEnd({ animated: true });
+    }
+  }, [otherUserTyping]);
 
   const loadUserProfile = async () => {
     try {
@@ -267,8 +339,8 @@ export default function ChatPage() {
     return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   };
 
-  const renderMessage = ({ item }: { item: Message }) => {
-    const isOwn = item.senderId === userProfile?.id;
+  const renderMessage = ({ item }: { item: any }) => {
+    const isOwn = item.senderId == userProfile.id ;
     
     return (
       <View style={[styles.messageContainer, isOwn ? styles.ownMessage : styles.otherMessage]}>
@@ -284,29 +356,21 @@ export default function ChatPage() {
     );
   };
 
-  if (loading) {
-    return (
-      <SafeAreaView style={styles.container}>
-        <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color={Colors.primary} />
-          <Text style={styles.loadingText}>Loading chat...</Text>
-        </View>
-      </SafeAreaView>
-    );
-  }
+  const renderTypingIndicator = () => {
+    if (!otherUserTyping) return null;
 
-  if (!chatInfo) {
     return (
-      <SafeAreaView style={styles.container}>
-        <View style={styles.errorContainer}>
-          <Text style={styles.errorText}>Chat not found</Text>
-          <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
-            <Text style={styles.backButtonText}>Go Back</Text>
-          </TouchableOpacity>
+      <View style={[styles.messageContainer, styles.otherMessage]}>
+        <View style={[styles.messageBubble, styles.otherBubble]}>
+          <View style={styles.typingIndicator}>
+            <Animated.View style={[styles.dot, { transform: [{ translateY: translateY1 }] }]} />
+            <Animated.View style={[styles.dot, { transform: [{ translateY: translateY2 }] }]} />
+            <Animated.View style={[styles.dot, { transform: [{ translateY: translateY3 }] }]} />
+          </View>
         </View>
-      </SafeAreaView>
+      </View>
     );
-  }
+  };
 
   return (
     <SafeAreaView style={styles.container}>
@@ -316,12 +380,7 @@ export default function ChatPage() {
           <Ionicons name="arrow-back" size={24} color={Colors.text} />
         </TouchableOpacity>
         <View style={styles.headerContent}>
-          <Text style={styles.title}>{getOtherParticipantName()}</Text>
-          {otherUserTyping && (
-            <Text style={styles.typingIndicator}>
-              {otherUserTypingName} is typing...
-            </Text>
-          )}
+          <Text style={styles.title}>{chatInfo ? getOtherParticipantName() : 'Loading...'}</Text>
         </View>
       </View>
 
@@ -330,44 +389,62 @@ export default function ChatPage() {
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 0}
       >
-        {/* Messages */}
-        <FlatList
-          ref={flatListRef}
-          data={messages}
-          renderItem={renderMessage}
-          keyExtractor={(item) => item.id}
-          style={styles.messagesList}
-          contentContainerStyle={styles.messagesContent}
-          showsVerticalScrollIndicator={false}
-          onContentSizeChange={() => flatListRef.current?.scrollToEnd({ animated: true })}
-          onLayout={() => flatListRef.current?.scrollToEnd({ animated: false })}
-        />
-
-        {/* Input Area */}
-        <View style={styles.inputContainer}>
-          <View style={styles.inputRow}>
-            <TextInput
-              style={styles.textInput}
-              value={messageText}
-              onChangeText={handleTyping}
-              placeholder="Type your message here ..."
-              placeholderTextColor={Colors.textSecondary}
-              multiline
-              maxLength={1000}
-            />
-            <TouchableOpacity
-              style={[styles.sendButton, (!messageText.trim() || sending) && styles.sendButtonDisabled]}
-              onPress={sendMessage}
-              disabled={!messageText.trim() || sending}
-            >
-              {sending ? (
-                <ActivityIndicator size="small" color={Colors.primary} />
-              ) : (
-                <Ionicons name="send" size={20} color={Colors.primary} />
-              )}
+        {loading ? (
+          <View style={styles.loadingContainer}>
+            <ActivityIndicator size="large" color={Colors.primary} />
+            <Text style={styles.loadingText}>Loading chat...</Text>
+          </View>
+        ) : !chatInfo ? (
+          <View style={styles.errorContainer}>
+            <Text style={styles.errorText}>Chat not found</Text>
+            <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
+              <Text style={styles.backButtonText}>Go Back</Text>
             </TouchableOpacity>
           </View>
-        </View>
+        ) : (
+          <>
+            {/* Messages */}
+            <FlatList
+              ref={flatListRef}
+              data={messages}
+              renderItem={renderMessage}
+              keyExtractor={(item) => item.id}
+              style={styles.messagesList}
+              contentContainerStyle={styles.messagesContent}
+              showsVerticalScrollIndicator={false}
+              onContentSizeChange={() => flatListRef.current?.scrollToEnd({ animated: true })}
+              onLayout={() => flatListRef.current?.scrollToEnd({ animated: false })}
+              extraData={otherUserTyping}
+              ListFooterComponent={renderTypingIndicator}
+            />
+
+            {/* Input Area */}
+            <View style={styles.inputContainer}>
+              <View style={styles.inputRow}>
+                <TextInput
+                  style={styles.textInput}
+                  value={messageText}
+                  onChangeText={handleTyping}
+                  placeholder="Type your message here ..."
+                  placeholderTextColor={Colors.textSecondary}
+                  multiline
+                  maxLength={1000}
+                />
+                <TouchableOpacity
+                  style={[styles.sendButton, (!messageText.trim() || sending) && styles.sendButtonDisabled]}
+                  onPress={sendMessage}
+                  disabled={!messageText.trim() || sending}
+                >
+                  {sending ? (
+                    <ActivityIndicator size="small" color={Colors.primary} />
+                  ) : (
+                    <Ionicons name="send" size={20} color={Colors.primary} />
+                  )}
+                </TouchableOpacity>
+              </View>
+            </View>
+          </>
+        )}
       </KeyboardAvoidingView>
     </SafeAreaView>
   );
@@ -398,9 +475,16 @@ const styles = StyleSheet.create({
     color: Colors.text,
   },
   typingIndicator: {
-    fontSize: 12,
-    color: Colors.textSecondary,
-    marginTop: 2,
+    flexDirection: 'row',
+    alignItems: 'center',
+    height: 20,
+  },
+  dot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: Colors.textSecondary,
+    marginHorizontal: 2,
   },
   keyboardContainer: {
     flex: 1,

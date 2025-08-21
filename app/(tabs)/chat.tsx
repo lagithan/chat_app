@@ -1,5 +1,5 @@
 // app/(tabs)/chat.tsx
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -16,6 +16,7 @@ import { Colors } from '@/constants/Colors';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { FirestoreService, Chat } from '@/services/firebase/firestore';
 import { DatabaseService } from '@/services/database/sqlite';
+import Toast from 'react-native-toast-message';
 
 export default function ChatTab() {
   const [chats, setChats] = useState<Chat[]>([]);
@@ -23,6 +24,7 @@ export default function ChatTab() {
   const [refreshing, setRefreshing] = useState(false);
   const [userProfile, setUserProfile] = useState<any>(null);
   const db = DatabaseService.getInstance();
+  const firstSubscriptionCall = useRef(true);
 
   useEffect(() => {
     loadUserProfile();
@@ -30,41 +32,80 @@ export default function ChatTab() {
   }, []);
 
   useFocusEffect(
-  React.useCallback(() => {
-    if (userProfile) {
-      loadChats();
-      // Set up real-time listener
-      const unsubscribe = FirestoreService.subscribeToUserChats(
-        userProfile.id,
-        async (updatedChats) => {
-          // Save each chat to SQLite
-          for (const chat of updatedChats) {
-            await db.saveChat(chat);
-          }
-          
-          // Simple merge: combine and deduplicate by chat ID
-          setChats(prevChats => {
-            const chatMap = new Map();
-            
-            // Add existing chats to map
-            prevChats.forEach(chat => chatMap.set(chat.id, chat));
-            
-            // Add/update with new chats (this will overwrite existing ones if they exist)
-            updatedChats.forEach(chat => chatMap.set(chat.id, chat));
-            
-            // Convert back to array and sort
-            const mergedChats = Array.from(chatMap.values());
-            return mergedChats.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-          });
-          
-          setLoading(false);
-        }
-      );
+    React.useCallback(() => {
+      if (userProfile) {
+        loadChats();
+        // Set up real-time listener
+        const unsubscribe = FirestoreService.subscribeToUserChats(
+          userProfile.id,
+          async (updatedChats) => {
+            // Save each chat to SQLite
+            for (const chat of updatedChats) {
+              await db.saveChat(chat);
+            }
 
-      return () => unsubscribe?.();
-    }
-  }, [userProfile])
-);
+            let newMessages:any = [];
+            setChats(prevChats => {
+              if (!firstSubscriptionCall.current) {
+                newMessages = computeNewMessages(prevChats, updatedChats);
+              }
+
+              // Simple merge: combine and deduplicate by chat ID
+              const chatMap = new Map();
+              // Add existing chats to map
+              prevChats.forEach(chat => chatMap.set(chat.id, chat));
+              // Add/update with new chats (this will overwrite existing ones if they exist)
+              updatedChats.forEach(chat => chatMap.set(chat.id, chat));
+
+              // Convert back to array and sort by last activity
+              const getSortTime = (chat: Chat) => chat.lastMessage?.timestamp || chat.createdAt;
+              const mergedChats = Array.from(chatMap.values()).sort((a, b) => new Date(getSortTime(b)).getTime() - new Date(getSortTime(a)).getTime());
+
+              return mergedChats;
+            });
+
+            firstSubscriptionCall.current = false;
+
+            // Show professional toast notifications for new incoming messages
+            newMessages.forEach((msg: any) => {
+              Toast.show({
+                type: 'info',
+                position: 'top',
+                text1: `New message from ${msg.from}`,
+                text2: msg.content.length > 50 ? msg.content.substring(0, 47) + '...' : msg.content,
+                visibilityTime: 4000,
+                autoHide: true,
+                onPress: () => router.push(`/chat/${msg.chatId}`),
+              });
+            });
+
+            setLoading(false);
+          }
+        );
+
+        return () => unsubscribe?.();
+      }
+    }, [userProfile])
+  );
+
+  const computeNewMessages = (prevChats: Chat[], updatedChats: Chat[]) => {
+    const newMsgs:any = [];
+    updatedChats.forEach((u: any) => {
+      const p = prevChats.find(c => c.id === u.id);
+      const uTime = u.lastMessage ? new Date(u.lastMessage.timestamp) : null;
+      const pTime = p?.lastMessage ? new Date(p.lastMessage.timestamp) : null;
+      if (uTime && (!pTime || uTime > pTime) && u.lastMessage.senderId !== userProfile.id) {
+        const otherId = u.participants.find((id: any) => id !== userProfile.id);
+        const from = u.participantNames[otherId] || 'Unknown';
+        newMsgs.push({
+          chatId: u.id,
+          from,
+          content: u.lastMessage.content
+        });
+      }
+    });
+    return newMsgs;
+  };
 
   const loadUserProfile = async () => {
     try {
@@ -87,16 +128,6 @@ export default function ChatTab() {
         setChats(localChats);
         setLoading(false);
       }
-
-      // If local chats are empty, load from Firebase
-      // const userChats = await FirestoreService.getUserChats(userProfile.id);
-      
-      
-      // for (const chat of userChats) {
-      //   await db.saveChat(chat);
-      //  }
-      
-      //  setChats(userChats);
     } catch (error) {
       console.error('Error loading chats:', error);
       // If Firebase fails, at least show local chats

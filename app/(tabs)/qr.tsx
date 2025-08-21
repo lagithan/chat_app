@@ -208,7 +208,7 @@ const joinChatSession = async (sessionData: any) => {
 
     // Navigate to chat
     router.push(`/chat/${chatId}`);
-  } catch (error) {
+  } catch (error: any) {
     console.error('Error joining chat session:', error);
     let errorMsg = 'Failed to join chat session. Please try again.';
     if (error?.message === 'Session not found') {
@@ -248,9 +248,6 @@ const joinChatSession = async (sessionData: any) => {
     <SafeAreaView style={styles.container}>
       <View style={styles.header}>
         <Text style={styles.title}>QR Code</Text>
-        <TouchableOpacity style={styles.notificationButton}>
-          <Ionicons name="notifications-outline" size={24} color={Colors.primary} />
-        </TouchableOpacity>
       </View>
 
       <View style={styles.content}>

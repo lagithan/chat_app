@@ -32,14 +32,6 @@ export default function RootLayout() {
       await initializeUser();
       console.log('Firebase user initialized');
 
-      // // Request notification permissions
-      // // const permissionGranted = await requestPermissions();
-      // if (permissionGranted) {
-      //   console.log('Notification permissions granted');
-      // } else {
-      //   console.log('Notification permissions denied');
-      // }
-
       
       setIsInitialized(true);
       console.log('App initialization completed');
