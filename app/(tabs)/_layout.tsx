@@ -2,11 +2,15 @@ import React from 'react';
 import { Tabs } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '@/constants/Colors';
-import { SafeAreaView } from 'react-native';
+import { View, Platform, StatusBar } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
 export default function TabLayout() {
   return (
-    <SafeAreaView style={{ flex: 1, backgroundColor: Colors.background }}>
+    <SafeAreaView 
+      style={{ flex: 1, backgroundColor: Colors.background }}
+      edges={['top']} // Only apply safe area to top
+    >
       <Tabs
         screenOptions={{
           tabBarActiveTintColor: Colors.primary,
@@ -15,8 +19,8 @@ export default function TabLayout() {
           tabBarStyle: {
             backgroundColor: Colors.background,
             borderTopColor: Colors.border,
-            height: 60,
-            paddingBottom: 8,
+            height: Platform.OS === 'android' ? 100 : 80, // Extra height for Android
+            paddingBottom: Platform.OS === 'android' ? 20 : 8, // Extra bottom padding
             paddingTop: 8,
           },
         }}

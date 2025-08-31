@@ -52,6 +52,15 @@ export interface Message {
   status: string;
 }
 
+export interface Permission {
+  id: String;
+  senderId: string;
+  senderName: string;
+  permission: boolean;
+  timestamp: any;
+  status: string;
+}
+
 export class FirestoreService {
   // QR Session Management
   static async createQRSession(hostId: string, hostName: string): Promise<string> {
@@ -90,6 +99,17 @@ export class FirestoreService {
       return null;
     } catch (error) {
       console.error('Error getting QR session:', error);
+      throw error;
+    }
+  }
+
+
+  static async deleteChat(chatId: string): Promise<void> {
+    try {
+      const chatRef = doc(db, 'chats', chatId);
+      await deleteDoc(chatRef);
+    } catch (error) {
+      console.error('Error deleting chat:', error);
       throw error;
     }
   }
@@ -244,6 +264,80 @@ export class FirestoreService {
     }
   }
 
+
+  static async sendPermission(chatId: string, senderId: string, senderName: string, permissionType: string): Promise<void> {
+    try{
+      const batch = writeBatch(db);
+
+      const permissionRef = doc(collection(db,'chats',chatId,'permissions'));
+      const permissionData = {
+        senderId,
+        senderName,
+        permission:false,
+        timestamp: serverTimestamp(),
+        status: 'sent'
+      };
+      batch.set(permissionRef,permissionData);
+      await batch.commit();
+    } catch (error) {
+      console.error('Error sending permission:', error);
+      throw error;
+    }
+  }
+
+  static async updatePermissionStatus(chatId: string, permissionId: string, status: boolean): Promise<void> {
+    try {
+      const permissionRef = doc(db, 'chats', chatId, 'permissions', permissionId);
+      await updateDoc(permissionRef, { permission: status });
+    } catch (error) {
+      console.error('Error updating permission status:', error);
+      throw error;
+    }
+  }
+
+
+ // Fixed subscribeToPermissions function - Remove async keyword
+static subscribeToPermissions(chatId: string, callback: (permission: Permission | null) => void, onError?: (error: Error) => void) {
+  try {
+    // Fixed: Use 'permissions' to match sendPermission function
+    const q = query(
+      collection(db, 'chats', chatId, 'permissions'),
+      orderBy('timestamp', 'desc') // Get most recent permission first
+    );
+
+    return onSnapshot(q, (snapshot) => {
+      if (snapshot.empty) {
+        callback(null); // No permissions found
+        return;
+      }
+
+      // Since permission is one, get the first (most recent) document
+      const doc = snapshot.docs[0];
+      const permission: Permission = {
+        id: doc.id,
+        senderId: doc.data().senderId,
+        senderName: doc.data().senderName,
+        permission: doc.data().permission,
+        timestamp: doc.data().timestamp,
+        status: doc.data().status
+      };
+      
+      callback(permission);
+    }, (error) => {
+      console.error('Error in permission subscription:', error);
+      if (onError) {
+        onError(error);
+      }
+    });
+  } catch (error) {
+    console.error('Error setting up permission subscription:', error);
+    if (onError && error instanceof Error) {
+      onError(error);
+    }
+    return () => {}; // Return empty unsubscribe function
+  }
+}
+
   static subscribeToMessages(chatId: string, callback: (messages: Message[]) => void, onError?: (error: Error) => void) {
     try {
       const q = query(
@@ -278,6 +372,8 @@ export class FirestoreService {
       return () => {}; // Return empty unsubscribe function
     }
   }
+
+  
 
   // Chat Actions
   static async leaveChat(chatId: string, userId: string): Promise<void> {

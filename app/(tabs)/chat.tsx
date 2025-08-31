@@ -25,71 +25,144 @@ export default function ChatTab() {
   const [userProfile, setUserProfile] = useState<any>(null);
   const db = DatabaseService.getInstance();
   const firstSubscriptionCall = useRef(true);
+  const unsubscribeRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     loadUserProfile();
-    loadChats();
+  }, []);
+
+  // Clean up subscription on unmount
+  useEffect(() => {
+    return () => {
+      if (unsubscribeRef.current) {
+        unsubscribeRef.current();
+      }
+    };
   }, []);
 
   useFocusEffect(
     React.useCallback(() => {
       if (userProfile) {
         loadChats();
-        // Set up real-time listener
-        const unsubscribe = FirestoreService.subscribeToUserChats(
-          userProfile.id,
-          async (updatedChats) => {
-            // Save each chat to SQLite
-            for (const chat of updatedChats) {
-              await db.saveChat(chat);
-            }
-
-            let newMessages:any = [];
-            setChats(prevChats => {
-              if (!firstSubscriptionCall.current) {
-                newMessages = computeNewMessages(prevChats, updatedChats);
-              }
-
-              // Simple merge: combine and deduplicate by chat ID
-              const chatMap = new Map();
-              // Add existing chats to map
-              prevChats.forEach(chat => chatMap.set(chat.id, chat));
-              // Add/update with new chats (this will overwrite existing ones if they exist)
-              updatedChats.forEach(chat => chatMap.set(chat.id, chat));
-
-              // Convert back to array and sort by last activity
-              const getSortTime = (chat: Chat) => chat.lastMessage?.timestamp || chat.createdAt;
-              const mergedChats = Array.from(chatMap.values()).sort((a, b) => new Date(getSortTime(b)).getTime() - new Date(getSortTime(a)).getTime());
-
-              return mergedChats;
-            });
-
-            firstSubscriptionCall.current = false;
-
-            // Show professional toast notifications for new incoming messages
-            newMessages.forEach((msg: any) => {
-              Toast.show({
-                type: 'info',
-                position: 'top',
-                text1: `New message from ${msg.from}`,
-                text2: msg.content.length > 50 ? msg.content.substring(0, 47) + '...' : msg.content,
-                visibilityTime: 4000,
-                autoHide: true,
-                onPress: () => router.push(`/chat/${msg.chatId}`),
-              });
-            });
-
-            setLoading(false);
-          }
-        );
-
-        return () => unsubscribe?.();
+        setupRealtimeListener();
       }
+      
+      // Cleanup function for when screen loses focus
+      return () => {
+        if (unsubscribeRef.current) {
+          unsubscribeRef.current();
+          unsubscribeRef.current = null;
+        }
+      };
     }, [userProfile])
   );
 
+  const setupRealtimeListener = () => {
+    if (!userProfile) return;
+
+    // Clean up existing listener
+    if (unsubscribeRef.current) {
+      unsubscribeRef.current();
+    }
+
+    // Set up real-time listener
+    unsubscribeRef.current = FirestoreService.subscribeToUserChats(
+      userProfile.id,
+      async (updatedChats) => {
+        try {
+          // Get current local chats
+          const localChats = await db.getAllChats();
+          
+          // Find chats that were deleted (exist locally but not in Firestore)
+          const firestoreChatIds = new Set(updatedChats.map(chat => chat.id));
+          const deletedChats = localChats.filter(localChat => !firestoreChatIds.has(localChat.id));
+          
+          // Delete removed chats from local database
+          for (const deletedChat of deletedChats) {
+            await db.deleteChat(deletedChat.id);
+          }
+
+          // Save/update existing chats to SQLite
+          for (const chat of updatedChats) {
+            await db.saveChat(chat);
+          }
+
+          let newMessages: any = [];
+          setChats(prevChats => {
+            if (!firstSubscriptionCall.current) {
+              newMessages = computeNewMessages(prevChats, updatedChats);
+            }
+
+            // Filter out inactive chats and merge with updated data
+            const activeChatMap = new Map();
+            
+            // Add updated active chats from Firestore
+            updatedChats
+              .filter(chat => chat.isActive !== false) // Only include active chats
+              .forEach(chat => activeChatMap.set(chat.id, chat));
+
+            // Convert back to array and sort by last activity
+            const getSortTime = (chat: Chat) => {
+              if (chat.lastMessage?.timestamp) {
+                if (typeof chat.lastMessage.timestamp === 'string') {
+                  return new Date(chat.lastMessage.timestamp);
+                } else if (chat.lastMessage.timestamp.toDate) {
+                  return chat.lastMessage.timestamp.toDate();
+                } else {
+                  return new Date(chat.lastMessage.timestamp);
+                }
+              }
+              
+              if (chat.createdAt) {
+                if (typeof chat.createdAt === 'string') {
+                  return new Date(chat.createdAt);
+                } else if (chat.createdAt.toDate) {
+                  return chat.createdAt.toDate();
+                } else {
+                  return new Date(chat.createdAt);
+                }
+              }
+              
+              return new Date(0);
+            };
+            
+            const mergedChats = Array.from(activeChatMap.values()).sort((a, b) => 
+              getSortTime(b).getTime() - getSortTime(a).getTime()
+            );
+
+            return mergedChats;
+          });
+
+          firstSubscriptionCall.current = false;
+
+          // Show professional toast notifications for new incoming messages
+          newMessages.forEach((msg: any) => {
+            Toast.show({
+              type: 'info',
+              position: 'top',
+              text1: `New message from ${msg.from}`,
+              text2: msg.content.length > 50 ? msg.content.substring(0, 47) + '...' : msg.content,
+              visibilityTime: 4000,
+              autoHide: true,
+              onPress: () => router.push(`/chat/${msg.chatId}`),
+            });
+          });
+
+          setLoading(false);
+        } catch (error) {
+          console.error('Error in chat subscription:', error);
+          setLoading(false);
+        }
+      },
+      (error) => {
+        console.error('Chat subscription error:', error);
+        setLoading(false);
+      }
+    );
+  };
+
   const computeNewMessages = (prevChats: Chat[], updatedChats: Chat[]) => {
-    const newMsgs:any = [];
+    const newMsgs: any = [];
     updatedChats.forEach((u: any) => {
       const p = prevChats.find(c => c.id === u.id);
       const uTime = u.lastMessage ? new Date(u.lastMessage.timestamp) : null;
@@ -122,17 +195,42 @@ export default function ChatTab() {
     if (!userProfile) return;
 
     try {
-      // First try to load from local SQLite
+      // Load from local SQLite first
       const localChats = await db.getAllChats();
-      if (localChats.length > 0) {
-        setChats(localChats);
+      
+      // Filter out any inactive chats from local storage
+      const activeLocalChats = localChats.filter(chat => chat.isActive !== false);
+      
+      if (activeLocalChats.length > 0) {
+        setChats(activeLocalChats);
         setLoading(false);
+      }
+
+      // Then try to get fresh data from Firestore
+      try {
+        const firestoreChats = await FirestoreService.getUserChats(userProfile.id);
+        const activeFirestoreChats = firestoreChats.filter(chat => chat.isActive !== false);
+        
+        // Update local database with fresh data
+        for (const chat of activeFirestoreChats) {
+          await db.saveChat(chat);
+        }
+        
+        // Clean up any chats that no longer exist in Firestore
+        const firestoreChatIds = new Set(activeFirestoreChats.map(chat => chat.id));
+        const chatsToDelete = localChats.filter(localChat => !firestoreChatIds.has(localChat.id));
+        
+        for (const chatToDelete of chatsToDelete) {
+          await db.deleteChat(chatToDelete.id);
+        }
+        
+        setChats(activeFirestoreChats);
+      } catch (firestoreError) {
+        console.error('Firestore error, using local data:', firestoreError);
+        // If Firestore fails, stick with local data
       }
     } catch (error) {
       console.error('Error loading chats:', error);
-      // If Firebase fails, at least show local chats
-      const localChats = await db.getAllChats();
-      setChats(localChats);
     } finally {
       setLoading(false);
     }
@@ -140,6 +238,7 @@ export default function ChatTab() {
 
   const onRefresh = async () => {
     setRefreshing(true);
+    firstSubscriptionCall.current = true; // Reset to avoid toast notifications on refresh
     await loadChats();
     setRefreshing(false);
   };
@@ -207,7 +306,6 @@ export default function ChatTab() {
             <Text style={styles.lastMessage} numberOfLines={1}>
               {item.lastMessage?.content || 'No messages yet'}
             </Text>
-            {/* You can add unread count here if needed */}
           </View>
         </View>
       </TouchableOpacity>

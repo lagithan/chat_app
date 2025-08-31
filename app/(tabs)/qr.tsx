@@ -10,6 +10,7 @@ import {
   Modal,
   Vibration,
   ActivityIndicator,
+  Platform,
 } from 'react-native';
 import { CameraView, Camera } from 'expo-camera';
 import { Ionicons } from '@expo/vector-icons';
@@ -416,11 +417,14 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingVertical: 16,
     borderTopColor: Colors.border,
-    elevation: 4,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: -2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
+    // Only show shadows on iOS, not Android
+    ...(Platform.OS === 'ios' && {
+      elevation: 4,
+      shadowColor: '#000',
+      shadowOffset: { width: 0, height: -2 },
+      shadowOpacity: 0.1,
+      shadowRadius: 4,
+    }),
   },
   actionButton: {
     flex: 1,
@@ -430,11 +434,14 @@ const styles = StyleSheet.create({
     padding: 16,
     borderRadius: 16,
     marginHorizontal: 8,
-    elevation: 2,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
+    // Only show shadows on iOS, not Android
+    ...(Platform.OS === 'ios' && {
+      elevation: 2,
+      shadowColor: '#000',
+      shadowOffset: { width: 0, height: 2 },
+      shadowOpacity: 0.1,
+      shadowRadius: 4,
+    }),
   },
   generateButton: {
     backgroundColor: Colors.primary,
@@ -454,11 +461,14 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     borderRadius: 20,
     padding: 30,
-    elevation: 4,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
+    // Only show shadows on iOS, not Android
+    ...(Platform.OS === 'ios' && {
+      elevation: 4,
+      shadowColor: '#000',
+      shadowOffset: { width: 0, height: 2 },
+      shadowOpacity: 0.1,
+      shadowRadius: 4,
+    }),
   },
   qrTitle: {
     fontSize: 16,
@@ -471,11 +481,14 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.background,
     borderRadius: 16,
     marginBottom: 20,
-    elevation: 2,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 2,
+    // Only show shadows on iOS, not Android
+    ...(Platform.OS === 'ios' && {
+      elevation: 2,
+      shadowColor: '#000',
+      shadowOffset: { width: 0, height: 1 },
+      shadowOpacity: 0.05,
+      shadowRadius: 2,
+    }),
   },
   closeButton: {
     backgroundColor: Colors.primary,

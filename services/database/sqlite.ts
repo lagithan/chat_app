@@ -35,6 +35,14 @@ export interface Message {
   status: string;
 }
 
+export interface UserProfile {
+  id: string;
+  name: string;
+  deviceId: string;
+  profileImage?: string;
+  status?: string;
+}
+
 export class DatabaseService {
   private static instance: DatabaseService;
   public db: SQLite.SQLiteDatabase;
@@ -71,6 +79,19 @@ export class DatabaseService {
         is_active INTEGER DEFAULT 1
       );
     `);
+
+    // Add this table creation in the createTables() method
+this.db.execSync(`
+  CREATE TABLE IF NOT EXISTS user_profiles (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    device_id TEXT NOT NULL,
+    profile_image TEXT,
+    status TEXT DEFAULT 'Available',
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+  );
+`);
 
     // Chats table
     this.db.execSync(`
@@ -138,6 +159,57 @@ export class DatabaseService {
 
   // Add this method to your DatabaseService class in services/database/sqlite.ts
 
+
+// User Profile Management
+async saveUserProfile(profile: UserProfile): Promise<void> {
+  try {
+    const now = new Date().toISOString();
+    
+    this.db.runSync(
+      `INSERT OR REPLACE INTO user_profiles 
+       (id, name, device_id, profile_image, status, updated_at) 
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [
+        profile.id,
+        profile.name,
+        profile.deviceId,
+        profile.profileImage || null,
+        profile.status || 'Available',
+        now
+      ]
+    );
+  } catch (error) {
+    console.error('Error saving user profile:', error);
+    throw error;
+  }
+}
+
+async getUserProfile(userId: string): Promise<UserProfile | null> {
+  try {
+    const result = this.db.getFirstSync(
+      'SELECT * FROM user_profiles WHERE id = ?',
+      [userId]
+    );
+    
+    if (result) {
+      return {
+        id: result.id,
+        name: result.name,
+        deviceId: result.device_id,
+        profileImage: result.profile_image || undefined,
+        status: result.status || 'Available'
+      };
+    }
+    
+    return null;
+  } catch (error) {
+    console.error('Error getting user profile:', error);
+    return null;
+  }
+}
+
+
+
 public async resetDatabase(): Promise<void> {
   try {
     // Drop all tables
@@ -204,6 +276,15 @@ public async clearAllData(): Promise<void> {
     }
   }
 
+  async deleteChat (chatId: string): Promise<void> {
+    try{
+      this.db.runSync('DELETE FROM chats WHERE id = ?', [chatId]);
+      this.db.runSync('DELETE FROM messages WHERE chat_id = ?', [chatId]);
+    } catch (error) {
+      console.error('Error deleting chat:', error);
+      throw error;
+    }
+  }
 
   async getAllChats(): Promise<Chat[]> {
     try {
@@ -237,6 +318,99 @@ public async clearAllData(): Promise<void> {
       return [];
     }
   }
+
+  // Add these debugging methods to your DatabaseService class
+
+// Debug method to check database state
+async debugDatabaseState(chatId: string): Promise<void> {
+  try {
+    console.log('=== Database Debug Info ===');
+    
+    // Check if chat exists
+    const chat = await this.getChatById(chatId);
+    console.log('Chat exists:', !!chat);
+    console.log('Chat data:', chat);
+    
+    // Check messages count
+    const messages = await this.getMessagesForChat(chatId);
+    console.log('Messages in DB:', messages.length);
+    
+    // Check table structure
+    const tables = this.db.getAllSync("SELECT name FROM sqlite_master WHERE type='table'");
+    console.log('Available tables:', tables);
+    
+    // Check messages table structure
+    const schema = this.db.getAllSync("PRAGMA table_info(messages)");
+    console.log('Messages table schema:', schema);
+    
+    console.log('=== End Debug Info ===');
+  } catch (error) {
+    console.error('Debug error:', error);
+  }
+}
+
+// Method to test database write permissions
+async testDatabaseWrite(): Promise<boolean> {
+  try {
+    const testId = `test_${Date.now()}`;
+    
+    // Try to insert a test record
+    this.db.runSync(
+      'INSERT INTO messages (id, chat_id, sender_id, sender_name, content) VALUES (?, ?, ?, ?, ?)',
+      [testId, 'test_chat', 'test_sender', 'Test User', 'Test message']
+    );
+    
+    // Try to read it back
+    const result = this.db.getFirstSync('SELECT * FROM messages WHERE id = ?', [testId]);
+    
+    // Clean up
+    this.db.runSync('DELETE FROM messages WHERE id = ?', [testId]);
+    
+    console.log('Database write test successful');
+    return !!result;
+  } catch (error) {
+    console.error('Database write test failed:', error);
+    return false;
+  }
+}
+
+
+
+async saveExistingMessages(messages: Message[]): Promise<void> {
+  try {
+    // Begin transaction for better performance and atomicity
+    this.db.execSync('BEGIN TRANSACTION;');
+    
+    for (const message of messages) {
+      // Use INSERT OR REPLACE to handle potential duplicates
+      this.db.runSync(
+        `INSERT OR REPLACE INTO messages 
+         (id, chat_id, sender_id, sender_name, content, timestamp, type, status) 
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          message.id,
+          message.chatId,
+          message.senderId,
+          message.senderName,
+          message.content,
+          this.safeConvertDate(message.timestamp),
+          message.type || 'text',
+          message.status || 'sent'
+        ]
+      );
+    }
+    
+    // Commit transaction
+    this.db.execSync('COMMIT;');
+    
+    console.log(`Successfully saved ${messages.length} messages to local database`);
+  } catch (error) {
+    // Rollback transaction on error
+    this.db.execSync('ROLLBACK;');
+    console.error('Error saving existing messages:', error);
+    throw error;
+  }
+}
 
   // Message Management (matching Firestore methods)
   async sendMessage(chatId: string, senderId: string, senderName: string, content: string): Promise<void> {

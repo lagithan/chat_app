@@ -18,7 +18,7 @@ import {
 import { useLocalSearchParams, router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { DatabaseService } from "@/services/database/sqlite";
-import { FirestoreService, Chat, Message } from "@/services/firebase/firestore";
+import { FirestoreService, Chat, Message, Permission } from "@/services/firebase/firestore";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Colors } from '@/constants/Colors';
 
@@ -33,6 +33,8 @@ export default function ChatPage() {
   const [isTyping, setIsTyping] = useState(false);
   const [otherUserTyping, setOtherUserTyping] = useState(false);
   const [otherUserTypingName, setOtherUserTypingName] = useState('');
+  const [pendingPermissionRequest, setPendingPermissionRequest] = useState(false);
+  const [handledPermissionIds, setHandledPermissionIds] = useState<Set<string>>(new Set());
   
   const db = DatabaseService.getInstance();
   const flatListRef = useRef<FlatList>(null);
@@ -107,12 +109,95 @@ export default function ChatPage() {
         }
       );
 
+      // Set up single permission listener to handle all permission logic
+      const unsubscribePermissions = FirestoreService.subscribeToPermissions(
+        chatInfo.id,
+        async (permission) => {
+          if (!permission) return;
+          
+          // Avoid handling the same permission multiple times
+          if (handledPermissionIds.has(permission.id.toString())) return;
+          
+          console.log('Processing permission:', {
+            permissionId: permission.id,
+            senderId: permission.senderId,
+            currentUserId: userProfile.id,
+            status: permission.status,
+            permission: permission.permission,
+            isPending: pendingPermissionRequest
+          });
+          
+          // CASE 1: Someone is asking ME for permission (I need to respond)
+          if (permission.senderId !== userProfile.id && !permission.permission && permission.status === 'sent') {
+            console.log('Received permission request from another user');
+            setHandledPermissionIds(prev => new Set(prev).add(permission.id.toString()));
+            showPermissionRequestAlert(permission);
+          }
+          
+          // CASE 2: I asked for permission and got a response
+          else if (permission.senderId === userProfile.id && permission.status === 'responded' && pendingPermissionRequest) {
+            console.log('Received response to my permission request');
+            setPendingPermissionRequest(false);
+            setHandledPermissionIds(prev => new Set(prev).add(permission.id.toString()));
+            
+            if (permission.permission) {
+              console.log('Permission was granted - saving messages');
+              // Permission granted - save messages BEFORE leaving
+              Alert.alert(
+                'Permission Granted',
+                'Your request was approved. Saving messages...',
+                [
+                  {
+                    text: 'OK',
+                    onPress: async () => {
+                      try {
+                        console.log('Starting save process...');
+                        console.log('Current chat info:', chatInfo);
+                        console.log('Current messages count:', messages.length);
+                        
+                        const saved = await saveMessagesToSQLite();
+                        console.log('Save result:', saved);
+                        
+                        if (saved) {
+                          console.log('Messages saved successfully, now leaving chat');
+                          await FirestoreService.leaveChat(chatInfo.id, userProfile.id);
+                          Alert.alert('Success', 'Messages saved successfully!', [
+                            { text: 'OK', onPress: () => router.push('/(tabs)/chat') }
+                          ]);
+                        } else {
+                          console.error('Failed to save messages');
+                          Alert.alert('Error', 'Failed to save messages. Please try again.');
+                        }
+                      } catch (error) {
+                        console.error('Error in permission granted flow:', error);
+                        Alert.alert('Error', 'An error occurred while saving messages.');
+                      }
+                    }
+                  }
+                ]
+              );
+            } else {
+              console.log('Permission was denied - cleaning up');
+              // Permission denied - clean up and leave
+              await deleteAllChatData();
+              Alert.alert('Permission Denied', 'Your request was denied. Chat data will be deleted.', [
+                { text: 'OK', onPress: () => router.push('/(tabs)/chat') }
+              ]);
+            }
+          }
+        },
+        (error) => {
+          console.error('Permission subscription error:', error);
+        }
+      );
+
       return () => {
         unsubscribeMessages?.();
         unsubscribeTyping?.();
+        unsubscribePermissions?.();
       };
     }
-  }, [chatInfo, userProfile]);
+  }, [chatInfo, userProfile, pendingPermissionRequest]);
 
   useEffect(() => {
     const animateDot = (dot: Animated.Value | Animated.ValueXY, delay: number) => {
@@ -245,14 +330,7 @@ export default function ChatPage() {
         content
       );
 
-      // Also save locally as backup
-      await db.sendMessage(
-        chatInfo.id,
-        userProfile.id,
-        userProfile.name || userProfile.displayName || 'Unknown',
-        content
-      );
-
+      
       // Stop typing indicator
       if (isTyping) {
         await FirestoreService.updateTypingStatus(chatInfo.id, userProfile.id, false);
@@ -263,20 +341,239 @@ export default function ChatPage() {
       console.error('Error sending message:', error);
       
       // If Firebase fails, save locally only
-      try {
-        await db.sendMessage(
-          chatInfo.id,
-          userProfile.id,
-          userProfile.name || userProfile.displayName || 'Unknown',
-          content
-        );
-        Alert.alert('Message saved locally', 'Will sync when connection is restored');
-      } catch (localError) {
-        console.error('Error saving message locally:', localError);
-        Alert.alert('Error', 'Failed to send message');
-      }
+     
     } finally {
       setSending(false);
+    }
+  };
+
+  // Delete chat and messages from both databases
+  const deleteAllChatData = async () => {
+    if (!chatInfo) return;
+
+    try {
+      // Delete from both databases in parallel
+      await Promise.all([
+        // Delete from SQLite
+        db.deleteChat(chatInfo.id),
+      
+        // Delete from Firestore (this also deactivates the chat)
+        FirestoreService.deleteChat(chatInfo.id)
+      ]);
+
+      console.log('Chat and messages deleted from both databases');
+    } catch (error) {
+      console.error('Error deleting chat data:', error);
+      Alert.alert('Warning', 'Some data may not have been fully deleted');
+    }
+  };
+
+  const handleLeaveChat = async () => {
+    if (!chatInfo || !userProfile) return;
+
+    Alert.alert(
+      'Leave Chat',
+      'Do you want to request permission to save the chat messages before leaving?',
+      [
+        {
+          text: 'Leave Without Saving',
+          style: 'destructive',
+          onPress: () => leaveWithoutPermission(),
+        },
+        {
+          text: 'Request Permission',
+          onPress: () => requestSavePermission(),
+        },
+        {
+          text: 'Cancel',
+          style: 'cancel',
+        },
+      ]
+    );
+  };
+
+  const requestSavePermission = async () => {
+    if (!chatInfo || !userProfile) return;
+
+    try {
+      setPendingPermissionRequest(true);
+      
+      // Send permission request
+      await FirestoreService.sendPermission(
+        chatInfo.id,
+        userProfile.id,
+        userProfile.name || userProfile.displayName || 'Unknown',
+        'save_messages'
+      );
+
+      Alert.alert(
+        'Permission Requested',
+        'Your request to save messages has been sent. You will be notified when the other user responds.',
+        [{ text: 'OK' }]
+      );
+
+    } catch (error) {
+      console.error('Error requesting permission:', error);
+      Alert.alert('Error', 'Failed to send permission request');
+      setPendingPermissionRequest(false);
+    }
+  };
+
+  const leaveWithoutPermission = async () => {
+    if (!chatInfo || !userProfile) return;
+
+    Alert.alert(
+      'Confirm Delete',
+      'This will permanently delete all messages and chat data. Are you sure?',
+      [
+        {
+          text: 'Cancel',
+          style: 'cancel',
+        },
+        {
+          text: 'Delete and Leave',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              // Delete all chat data from both databases
+              await deleteAllChatData();
+              router.push('/(tabs)/chat');
+            } catch (error) {
+              console.error('Error leaving chat:', error);
+              Alert.alert('Error', 'Failed to leave chat');
+            }
+          }
+        }
+      ]
+    );
+  };
+
+  const saveMessagesToSQLite = async () => {
+    console.log('=== SAVE MESSAGES DEBUG ===');
+    console.log('Chat Info exists:', !!chatInfo);
+    console.log('Chat Info ID:', chatInfo?.id);
+    console.log('Messages count:', messages.length);
+    console.log('User Profile:', userProfile?.id);
+    
+    if (!chatInfo) {
+      console.error('No chat info available for saving');
+      return false;
+    }
+    
+    if (!messages || messages.length === 0) {
+      console.error('No messages available for saving');
+      return false;
+    }
+
+    try {
+      console.log(`Attempting to save ${messages.length} messages to local database`);
+      
+      // First, ensure we have the bulk save method available
+      if (typeof db.saveExistingMessages !== 'function') {
+        console.error('saveExistingMessages method not available on database service');
+        
+        // Fallback: Save messages one by one (not ideal but will work)
+        console.log('Using fallback method to save messages');
+        for (const message of messages) {
+          try {
+            // Create a unique message ID if it doesn't exist
+            const messageId = message.id || `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+            await db.sendMessage(
+              message.chatId,
+              message.senderId,
+              message.senderName,
+              message.content
+            );
+          } catch (msgError) {
+            console.error('Error saving individual message:', msgError);
+          }
+        }
+      } else {
+        // Use the bulk save method
+        await db.saveExistingMessages(messages);
+      }
+      
+      // Also ensure the chat is saved locally with all required fields
+      const chatToSave = {
+        id: chatInfo.id,
+        participants: chatInfo.participants,
+        participantNames: chatInfo.participantNames,
+        createdAt: chatInfo.createdAt,
+        updatedAt: new Date().toISOString(),
+        lastMessage: chatInfo.lastMessage,
+        isActive: true
+      };
+      
+      await db.saveChat(chatToSave);
+      
+      // Verify the save worked
+      const savedMessages = await db.getMessagesForChat(chatInfo.id);
+      console.log(`Verification: ${savedMessages.length} messages now in database`);
+      
+      if (savedMessages.length === 0) {
+        console.warn('No messages were saved to database');
+        return false;
+      }
+      
+      console.log('Messages successfully saved to local database');
+      return true;
+      
+    } catch (error) {
+      console.error('Error saving messages to SQLite:', error);
+     
+      return false;
+    }
+  };
+
+  const showPermissionRequestAlert = (permission: Permission) => {
+    Alert.alert(
+      'Permission Request',
+      `${permission.senderName} wants to save the chat messages before leaving. Do you allow this?`,
+      [
+        {
+          text: 'Deny',
+          style: 'destructive',
+          onPress: () => handlePermissionResponse(permission.id.toString(), false),
+        },
+        {
+          text: 'Allow',
+          onPress: () => handlePermissionResponse(permission.id.toString(), true),
+        },
+      ]
+    );
+  };
+
+  const handlePermissionResponse = async (permissionId: string, granted: boolean) => {
+    if (!chatInfo) return;
+
+    try {
+      console.log('Responding to permission request:', { permissionId, granted });
+      
+      // Update permission status in Firebase
+      await FirestoreService.updatePermissionStatus(chatInfo.id, permissionId, granted);
+
+      if (granted) {
+        console.log('Permission granted - OTHER user will save messages');
+        // Just notify that permission was granted
+        // The OTHER user (who requested permission) will handle saving
+        Alert.alert(
+          'Permission Granted', 
+          'You have allowed the other user to save the chat messages. They will handle the saving process.'
+        );
+      } else {
+        console.log('Permission denied - deleting all chat data');
+        // Permission denied - delete everything for both users
+        await deleteAllChatData();
+        Alert.alert(
+          'Permission Denied', 
+          'Permission was denied. All chat data has been deleted.',
+          [{ text: 'OK', onPress: () => router.push('/(tabs)/chat') }]
+        );
+      }
+
+    } catch (error) {
+      console.error('Error responding to permission:', error);
+      Alert.alert('Error', 'Failed to respond to permission request');
     }
   };
 
@@ -376,12 +673,25 @@ export default function ChatPage() {
     <SafeAreaView style={styles.container}>
       {/* Header */}
       <View style={styles.header}>
-        <TouchableOpacity style={styles.backIcon} onPress={() => router.back()}>
+        <TouchableOpacity style={styles.backIcon} onPress={() => router.push('/chat')}>
           <Ionicons name="arrow-back" size={24} color={Colors.text} />
         </TouchableOpacity>
         <View style={styles.headerContent}>
           <Text style={styles.title}>{chatInfo ? getOtherParticipantName() : 'Loading...'}</Text>
         </View>
+        {chatInfo && (
+          <TouchableOpacity 
+            style={styles.leaveButton} 
+            onPress={handleLeaveChat}
+            disabled={pendingPermissionRequest}
+          >
+            {pendingPermissionRequest ? (
+              <ActivityIndicator size="small" color={Colors.primary} />
+            ) : (
+              <Ionicons name="exit-outline" size={24} color={Colors.primary} />
+            )}
+          </TouchableOpacity>
+        )}
       </View>
 
       <KeyboardAvoidingView 
@@ -459,7 +769,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingVertical: 24,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: Colors.border,
   },
@@ -473,6 +783,10 @@ const styles = StyleSheet.create({
     fontSize: 17,
     fontWeight: '600',
     color: Colors.text,
+  },
+  leaveButton: {
+    padding: 8,
+    marginLeft: 8,
   },
   typingIndicator: {
     flexDirection: 'row',
@@ -543,7 +857,7 @@ const styles = StyleSheet.create({
   inputContainer: {
     backgroundColor: Colors.background,
     paddingHorizontal: 20,
-    paddingVertical: 24,
+    paddingVertical: 40,
   },
   inputRow: {
     flexDirection: 'row',
