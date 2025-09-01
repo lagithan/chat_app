@@ -15,12 +15,13 @@ import {
   Animated,
   Easing,
 } from 'react-native';
-import { useLocalSearchParams, router } from 'expo-router';
+import { useLocalSearchParams, router, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { DatabaseService } from "@/services/database/sqlite";
 import { FirestoreService, Chat, Message, Permission } from "@/services/firebase/firestore";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Colors } from '@/constants/Colors';
+import { useChatContext } from '@/contexts/ChatContext';
 
 export default function ChatPage() {
   const { id } = useLocalSearchParams();
@@ -40,6 +41,9 @@ export default function ChatPage() {
   const flatListRef = useRef<FlatList>(null);
   const typingTimeoutRef = useRef<NodeJS.Timeout>();
 
+  // Use chat context to track current chat
+  const { setCurrentChatId } = useChatContext();
+
   const dotPosition1 = useRef(new Animated.Value(0)).current;
   const dotPosition2 = useRef(new Animated.Value(0)).current;
   const dotPosition3 = useRef(new Animated.Value(0)).current;
@@ -58,6 +62,22 @@ export default function ChatPage() {
   });
 
   const typingAnimationRef = useRef<{anim1?: Animated.CompositeAnimation, anim2?: Animated.CompositeAnimation, anim3?: Animated.CompositeAnimation}>({});
+
+  // Set current chat when entering the page, clear when leaving
+  useFocusEffect(
+    React.useCallback(() => {
+      if (id) {
+        console.log('ChatPage: Setting current chat to:', id);
+        setCurrentChatId(id as string);
+      }
+      
+      // Clear current chat when leaving the page
+      return () => {
+        console.log('ChatPage: Clearing current chat');
+        setCurrentChatId(null);
+      };
+    }, [id, setCurrentChatId])
+  );
 
   useEffect(() => {
     loadUserProfile();
@@ -79,6 +99,8 @@ export default function ChatPage() {
       const unsubscribeMessages = FirestoreService.subscribeToMessages(
         chatInfo.id,
         (updatedMessages) => {
+          console.log('ChatPage: Received', updatedMessages.length, 'messages');
+          
           // Save messages to local database
           updatedMessages.forEach(async (message) => {
             try {
@@ -89,13 +111,13 @@ export default function ChatPage() {
                 message.content
               );
             } catch (error) {
-              console.error('Error saving message locally:', error);
+              console.error('ChatPage: Error saving message locally:', error);
             }
           });
           setMessages(updatedMessages);
         },
         (error) => {
-          console.error('Message subscription error:', error);
+          console.error('ChatPage: Message subscription error:', error);
         }
       );
 
@@ -109,7 +131,7 @@ export default function ChatPage() {
         }
       );
 
-      // Set up single permission listener to handle all permission logic
+      // Set up permission listener
       const unsubscribePermissions = FirestoreService.subscribeToPermissions(
         chatInfo.id,
         async (permission) => {
@@ -118,7 +140,7 @@ export default function ChatPage() {
           // Avoid handling the same permission multiple times
           if (handledPermissionIds.has(permission.id.toString())) return;
           
-          console.log('Processing permission:', {
+          console.log('ChatPage: Processing permission:', {
             permissionId: permission.id,
             senderId: permission.senderId,
             currentUserId: userProfile.id,
@@ -127,22 +149,21 @@ export default function ChatPage() {
             isPending: pendingPermissionRequest
           });
           
-          // CASE 1: Someone is asking ME for permission (I need to respond)
+          // Someone is asking ME for permission
           if (permission.senderId !== userProfile.id && !permission.permission && permission.status === 'sent') {
-            console.log('Received permission request from another user');
+            console.log('ChatPage: Received permission request from another user');
             setHandledPermissionIds(prev => new Set(prev).add(permission.id.toString()));
             showPermissionRequestAlert(permission);
           }
           
-          // CASE 2: I asked for permission and got a response
+          // I asked for permission and got a response
           else if (permission.senderId === userProfile.id && permission.status === 'responded' && pendingPermissionRequest) {
-            console.log('Received response to my permission request');
+            console.log('ChatPage: Received response to my permission request');
             setPendingPermissionRequest(false);
             setHandledPermissionIds(prev => new Set(prev).add(permission.id.toString()));
             
             if (permission.permission) {
-              console.log('Permission was granted - saving messages');
-              // Permission granted - save messages BEFORE leaving
+              console.log('ChatPage: Permission was granted - saving messages');
               Alert.alert(
                 'Permission Granted',
                 'Your request was approved. Saving messages...',
@@ -151,25 +172,18 @@ export default function ChatPage() {
                     text: 'OK',
                     onPress: async () => {
                       try {
-                        console.log('Starting save process...');
-                        console.log('Current chat info:', chatInfo);
-                        console.log('Current messages count:', messages.length);
-                        
                         const saved = await saveMessagesToSQLite();
-                        console.log('Save result:', saved);
                         
                         if (saved) {
-                          console.log('Messages saved successfully, now leaving chat');
                           await FirestoreService.leaveChat(chatInfo.id, userProfile.id);
                           Alert.alert('Success', 'Messages saved successfully!', [
                             { text: 'OK', onPress: () => router.push('/(tabs)/chat') }
                           ]);
                         } else {
-                          console.error('Failed to save messages');
                           Alert.alert('Error', 'Failed to save messages. Please try again.');
                         }
                       } catch (error) {
-                        console.error('Error in permission granted flow:', error);
+                        console.error('ChatPage: Error in permission granted flow:', error);
                         Alert.alert('Error', 'An error occurred while saving messages.');
                       }
                     }
@@ -177,8 +191,7 @@ export default function ChatPage() {
                 ]
               );
             } else {
-              console.log('Permission was denied - cleaning up');
-              // Permission denied - clean up and leave
+              console.log('ChatPage: Permission was denied - cleaning up');
               await deleteAllChatData();
               Alert.alert('Permission Denied', 'Your request was denied. Chat data will be deleted.', [
                 { text: 'OK', onPress: () => router.push('/(tabs)/chat') }
@@ -187,11 +200,12 @@ export default function ChatPage() {
           }
         },
         (error) => {
-          console.error('Permission subscription error:', error);
+          console.error('ChatPage: Permission subscription error:', error);
         }
       );
 
       return () => {
+        console.log('ChatPage: Cleaning up subscriptions');
         unsubscribeMessages?.();
         unsubscribeTyping?.();
         unsubscribePermissions?.();
@@ -199,6 +213,7 @@ export default function ChatPage() {
     }
   }, [chatInfo, userProfile, pendingPermissionRequest]);
 
+  // Typing indicator animation
   useEffect(() => {
     const animateDot = (dot: Animated.Value | Animated.ValueXY, delay: number) => {
       const animation = Animated.loop(
@@ -254,10 +269,12 @@ export default function ChatPage() {
     try {
       const profile = await AsyncStorage.getItem('userProfile');
       if (profile) {
-        setUserProfile(JSON.parse(profile));
+        const parsedProfile = JSON.parse(profile);
+        console.log('ChatPage: Loaded user profile:', parsedProfile.id);
+        setUserProfile(parsedProfile);
       }
     } catch (error) {
-      console.error('Error loading profile:', error);
+      console.error('ChatPage: Error loading profile:', error);
     } finally {
       setLoading(false);
     }
@@ -267,15 +284,19 @@ export default function ChatPage() {
     if (!userProfile || !id) return;
     
     try {
+      console.log('ChatPage: Loading chat info for:', id);
+      
       // Try loading from local database first
       let chat = await db.getChatById(id as string);
           
       if (!chat) {
+        console.log('ChatPage: Chat not found locally, trying Firestore');
         // If not found locally, try Firebase
         const userChats = await FirestoreService.getUserChats(userProfile.id);
         chat = userChats.find((c) => c.id === id) || null;
               
         if (chat) {
+          console.log('ChatPage: Found chat in Firestore, saving locally');
           // Save the complete chat object with all required fields
           const chatToSave = {
             id: chat.id,
@@ -293,10 +314,16 @@ export default function ChatPage() {
           chat = chatToSave;
         }
       }
+
+      if (chat) {
+        console.log('ChatPage: Loaded chat:', chat.id);
+      } else {
+        console.log('ChatPage: Chat not found');
+      }
           
       setChatInfo(chat);
     } catch (error) {
-      console.error('Error loading chat info:', error);
+      console.error('ChatPage: Error loading chat info:', error);
     }
   };
 
@@ -304,13 +331,15 @@ export default function ChatPage() {
     if (!chatInfo) return;
 
     try {
+      console.log('ChatPage: Loading messages for chat:', chatInfo.id);
       // First load from local database
       const localMessages = await db.getMessagesForChat(chatInfo.id);
+      console.log('ChatPage: Loaded', localMessages.length, 'messages from local DB');
       if (localMessages.length > 0) {
         setMessages(localMessages);
       }
     } catch (error) {
-      console.error('Error loading local messages:', error);
+      console.error('ChatPage: Error loading local messages:', error);
     }
   };
 
@@ -322,6 +351,8 @@ export default function ChatPage() {
     setSending(true);
 
     try {
+      console.log('ChatPage: Sending message:', content.substring(0, 50) + '...');
+      
       // Send to Firebase first
       await FirestoreService.sendMessage(
         chatInfo.id,
@@ -330,7 +361,6 @@ export default function ChatPage() {
         content
       );
 
-      
       // Stop typing indicator
       if (isTyping) {
         await FirestoreService.updateTypingStatus(chatInfo.id, userProfile.id, false);
@@ -338,32 +368,26 @@ export default function ChatPage() {
       }
 
     } catch (error) {
-      console.error('Error sending message:', error);
-      
-      // If Firebase fails, save locally only
-     
+      console.error('ChatPage: Error sending message:', error);
     } finally {
       setSending(false);
     }
   };
 
-  // Delete chat and messages from both databases
   const deleteAllChatData = async () => {
     if (!chatInfo) return;
 
     try {
+      console.log('ChatPage: Deleting all chat data for:', chatInfo.id);
       // Delete from both databases in parallel
       await Promise.all([
-        // Delete from SQLite
         db.deleteChat(chatInfo.id),
-      
-        // Delete from Firestore (this also deactivates the chat)
         FirestoreService.deleteChat(chatInfo.id)
       ]);
 
-      console.log('Chat and messages deleted from both databases');
+      console.log('ChatPage: Chat and messages deleted from both databases');
     } catch (error) {
-      console.error('Error deleting chat data:', error);
+      console.error('ChatPage: Error deleting chat data:', error);
       Alert.alert('Warning', 'Some data may not have been fully deleted');
     }
   };
@@ -396,9 +420,9 @@ export default function ChatPage() {
     if (!chatInfo || !userProfile) return;
 
     try {
+      console.log('ChatPage: Requesting save permission');
       setPendingPermissionRequest(true);
       
-      // Send permission request
       await FirestoreService.sendPermission(
         chatInfo.id,
         userProfile.id,
@@ -413,7 +437,7 @@ export default function ChatPage() {
       );
 
     } catch (error) {
-      console.error('Error requesting permission:', error);
+      console.error('ChatPage: Error requesting permission:', error);
       Alert.alert('Error', 'Failed to send permission request');
       setPendingPermissionRequest(false);
     }
@@ -435,11 +459,10 @@ export default function ChatPage() {
           style: 'destructive',
           onPress: async () => {
             try {
-              // Delete all chat data from both databases
               await deleteAllChatData();
               router.push('/(tabs)/chat');
             } catch (error) {
-              console.error('Error leaving chat:', error);
+              console.error('ChatPage: Error leaving chat:', error);
               Alert.alert('Error', 'Failed to leave chat');
             }
           }
@@ -449,35 +472,32 @@ export default function ChatPage() {
   };
 
   const saveMessagesToSQLite = async () => {
-    console.log('=== SAVE MESSAGES DEBUG ===');
-    console.log('Chat Info exists:', !!chatInfo);
-    console.log('Chat Info ID:', chatInfo?.id);
-    console.log('Messages count:', messages.length);
-    console.log('User Profile:', userProfile?.id);
+    console.log('ChatPage: === SAVE MESSAGES DEBUG ===');
+    console.log('ChatPage: Chat Info exists:', !!chatInfo);
+    console.log('ChatPage: Chat Info ID:', chatInfo?.id);
+    console.log('ChatPage: Messages count:', messages.length);
+    console.log('ChatPage: User Profile:', userProfile?.id);
     
     if (!chatInfo) {
-      console.error('No chat info available for saving');
+      console.error('ChatPage: No chat info available for saving');
       return false;
     }
     
     if (!messages || messages.length === 0) {
-      console.error('No messages available for saving');
+      console.error('ChatPage: No messages available for saving');
       return false;
     }
 
     try {
-      console.log(`Attempting to save ${messages.length} messages to local database`);
+      console.log(`ChatPage: Attempting to save ${messages.length} messages to local database`);
       
-      // First, ensure we have the bulk save method available
       if (typeof db.saveExistingMessages !== 'function') {
-        console.error('saveExistingMessages method not available on database service');
+        console.error('ChatPage: saveExistingMessages method not available');
         
-        // Fallback: Save messages one by one (not ideal but will work)
-        console.log('Using fallback method to save messages');
+        // Fallback: Save messages one by one
+        console.log('ChatPage: Using fallback method to save messages');
         for (const message of messages) {
           try {
-            // Create a unique message ID if it doesn't exist
-            const messageId = message.id || `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
             await db.sendMessage(
               message.chatId,
               message.senderId,
@@ -485,7 +505,7 @@ export default function ChatPage() {
               message.content
             );
           } catch (msgError) {
-            console.error('Error saving individual message:', msgError);
+            console.error('ChatPage: Error saving individual message:', msgError);
           }
         }
       } else {
@@ -493,7 +513,7 @@ export default function ChatPage() {
         await db.saveExistingMessages(messages);
       }
       
-      // Also ensure the chat is saved locally with all required fields
+      // Also ensure the chat is saved locally
       const chatToSave = {
         id: chatInfo.id,
         participants: chatInfo.participants,
@@ -508,19 +528,12 @@ export default function ChatPage() {
       
       // Verify the save worked
       const savedMessages = await db.getMessagesForChat(chatInfo.id);
-      console.log(`Verification: ${savedMessages.length} messages now in database`);
+      console.log(`ChatPage: Verification: ${savedMessages.length} messages now in database`);
       
-      if (savedMessages.length === 0) {
-        console.warn('No messages were saved to database');
-        return false;
-      }
-      
-      console.log('Messages successfully saved to local database');
-      return true;
+      return savedMessages.length > 0;
       
     } catch (error) {
-      console.error('Error saving messages to SQLite:', error);
-     
+      console.error('ChatPage: Error saving messages to SQLite:', error);
       return false;
     }
   };
@@ -547,22 +560,18 @@ export default function ChatPage() {
     if (!chatInfo) return;
 
     try {
-      console.log('Responding to permission request:', { permissionId, granted });
+      console.log('ChatPage: Responding to permission request:', { permissionId, granted });
       
-      // Update permission status in Firebase
       await FirestoreService.updatePermissionStatus(chatInfo.id, permissionId, granted);
 
       if (granted) {
-        console.log('Permission granted - OTHER user will save messages');
-        // Just notify that permission was granted
-        // The OTHER user (who requested permission) will handle saving
+        console.log('ChatPage: Permission granted');
         Alert.alert(
           'Permission Granted', 
-          'You have allowed the other user to save the chat messages. They will handle the saving process.'
+          'You have allowed the other user to save the chat messages.'
         );
       } else {
-        console.log('Permission denied - deleting all chat data');
-        // Permission denied - delete everything for both users
+        console.log('ChatPage: Permission denied - deleting all chat data');
         await deleteAllChatData();
         Alert.alert(
           'Permission Denied', 
@@ -572,7 +581,7 @@ export default function ChatPage() {
       }
 
     } catch (error) {
-      console.error('Error responding to permission:', error);
+      console.error('ChatPage: Error responding to permission:', error);
       Alert.alert('Error', 'Failed to respond to permission request');
     }
   };
@@ -595,7 +604,7 @@ export default function ChatPage() {
       try {
         await FirestoreService.updateTypingStatus(chatInfo.id, userProfile.id, isCurrentlyTyping);
       } catch (error) {
-        console.error('Error updating typing status:', error);
+        console.error('ChatPage: Error updating typing status:', error);
       }
     }
 
@@ -606,7 +615,7 @@ export default function ChatPage() {
         try {
           await FirestoreService.updateTypingStatus(chatInfo.id, userProfile.id, false);
         } catch (error) {
-          console.error('Error stopping typing status:', error);
+          console.error('ChatPage: Error stopping typing status:', error);
         }
       }, 2000);
     }
@@ -637,7 +646,7 @@ export default function ChatPage() {
   };
 
   const renderMessage = ({ item }: { item: any }) => {
-    const isOwn = item.senderId == userProfile.id ;
+    const isOwn = item.senderId == userProfile.id;
     
     return (
       <View style={[styles.messageContainer, isOwn ? styles.ownMessage : styles.otherMessage]}>
@@ -673,7 +682,7 @@ export default function ChatPage() {
     <SafeAreaView style={styles.container}>
       {/* Header */}
       <View style={styles.header}>
-        <TouchableOpacity style={styles.backIcon} onPress={() => router.push('/chat')}>
+        <TouchableOpacity style={styles.backIcon} onPress={() => router.push('/(tabs)/chat')}>
           <Ionicons name="arrow-back" size={24} color={Colors.text} />
         </TouchableOpacity>
         <View style={styles.headerContent}>

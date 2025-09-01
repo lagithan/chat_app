@@ -16,7 +16,8 @@ import { Colors } from '@/constants/Colors';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { FirestoreService, Chat } from '@/services/firebase/firestore';
 import { DatabaseService } from '@/services/database/sqlite';
-import Toast from 'react-native-toast-message';
+import { useNotifications } from '@/hooks/useNotifications';
+import { MessageNotification } from '@/services/notifications/NotificationService';
 
 export default function ChatTab() {
   const [chats, setChats] = useState<Chat[]>([]);
@@ -24,8 +25,10 @@ export default function ChatTab() {
   const [refreshing, setRefreshing] = useState(false);
   const [userProfile, setUserProfile] = useState<any>(null);
   const db = DatabaseService.getInstance();
-  const firstSubscriptionCall = useRef(true);
   const unsubscribeRef = useRef<(() => void) | null>(null);
+  
+  // Use the notifications hook
+  const { showBatchMessageNotifications, notificationService } = useNotifications();
 
   useEffect(() => {
     loadUserProfile();
@@ -57,8 +60,39 @@ export default function ChatTab() {
     }, [userProfile])
   );
 
+  // Helper function to convert various timestamp formats to Date
+  const convertToDate = (timestamp: any): Date => {
+    if (!timestamp) return new Date(0);
+    
+    try {
+      // Firestore Timestamp
+      if (timestamp && typeof timestamp === 'object' && timestamp.toDate) {
+        return timestamp.toDate();
+      }
+      // Already a Date object
+      if (timestamp instanceof Date) {
+        return timestamp;
+      }
+      // String timestamp
+      if (typeof timestamp === 'string') {
+        return new Date(timestamp);
+      }
+      // Number timestamp
+      if (typeof timestamp === 'number') {
+        return new Date(timestamp);
+      }
+      
+      return new Date(0);
+    } catch (error) {
+      console.error('ChatTab: Error converting timestamp:', error);
+      return new Date(0);
+    }
+  };
+
   const setupRealtimeListener = () => {
     if (!userProfile) return;
+
+    console.log('ChatTab: Setting up realtime listener for user:', userProfile.id);
 
     // Clean up existing listener
     if (unsubscribeRef.current) {
@@ -70,7 +104,9 @@ export default function ChatTab() {
       userProfile.id,
       async (updatedChats) => {
         try {
-          // Get current local chats
+          console.log('ChatTab: Received', updatedChats.length, 'updated chats');
+
+          // Get current local chats for comparison
           const localChats = await db.getAllChats();
           
           // Find chats that were deleted (exist locally but not in Firestore)
@@ -87,40 +123,27 @@ export default function ChatTab() {
             await db.saveChat(chat);
           }
 
-          let newMessages: any = [];
-          setChats(prevChats => {
-            if (!firstSubscriptionCall.current) {
-              newMessages = computeNewMessages(prevChats, updatedChats);
-            }
+          // Check for new messages BEFORE updating state
+          const newMessageNotifications = checkForNewMessages(updatedChats);
 
+          // Update state
+          setChats(prevChats => {
             // Filter out inactive chats and merge with updated data
             const activeChatMap = new Map();
             
             // Add updated active chats from Firestore
             updatedChats
-              .filter(chat => chat.isActive !== false) // Only include active chats
+              .filter(chat => chat.isActive !== false)
               .forEach(chat => activeChatMap.set(chat.id, chat));
 
             // Convert back to array and sort by last activity
             const getSortTime = (chat: Chat) => {
               if (chat.lastMessage?.timestamp) {
-                if (typeof chat.lastMessage.timestamp === 'string') {
-                  return new Date(chat.lastMessage.timestamp);
-                } else if (chat.lastMessage.timestamp.toDate) {
-                  return chat.lastMessage.timestamp.toDate();
-                } else {
-                  return new Date(chat.lastMessage.timestamp);
-                }
+                return convertToDate(chat.lastMessage.timestamp);
               }
               
               if (chat.createdAt) {
-                if (typeof chat.createdAt === 'string') {
-                  return new Date(chat.createdAt);
-                } else if (chat.createdAt.toDate) {
-                  return chat.createdAt.toDate();
-                } else {
-                  return new Date(chat.createdAt);
-                }
+                return convertToDate(chat.createdAt);
               }
               
               return new Date(0);
@@ -133,61 +156,88 @@ export default function ChatTab() {
             return mergedChats;
           });
 
-          firstSubscriptionCall.current = false;
-
-          // Show professional toast notifications for new incoming messages
-          newMessages.forEach((msg: any) => {
-            Toast.show({
-              type: 'info',
-              position: 'top',
-              text1: `New message from ${msg.from}`,
-              text2: msg.content.length > 50 ? msg.content.substring(0, 47) + '...' : msg.content,
-              visibilityTime: 4000,
-              autoHide: true,
-              onPress: () => router.push(`/chat/${msg.chatId}`),
-            });
-          });
+          // Show notifications for new messages (after state update)
+          if (newMessageNotifications.length > 0) {
+            console.log('ChatTab: Showing', newMessageNotifications.length, 'notifications');
+            // Small delay to ensure context is updated
+            setTimeout(() => {
+              showBatchMessageNotifications(newMessageNotifications);
+            }, 100);
+          }
 
           setLoading(false);
         } catch (error) {
-          console.error('Error in chat subscription:', error);
+          console.error('ChatTab: Error in chat subscription:', error);
           setLoading(false);
         }
       },
       (error) => {
-        console.error('Chat subscription error:', error);
+        console.error('ChatTab: Chat subscription error:', error);
         setLoading(false);
       }
     );
   };
 
-  const computeNewMessages = (prevChats: Chat[], updatedChats: Chat[]) => {
-    const newMsgs: any = [];
-    updatedChats.forEach((u: any) => {
-      const p = prevChats.find(c => c.id === u.id);
-      const uTime = u.lastMessage ? new Date(u.lastMessage.timestamp) : null;
-      const pTime = p?.lastMessage ? new Date(p.lastMessage.timestamp) : null;
-      if (uTime && (!pTime || uTime > pTime) && u.lastMessage.senderId !== userProfile.id) {
-        const otherId = u.participants.find((id: any) => id !== userProfile.id);
-        const from = u.participantNames[otherId] || 'Unknown';
-        newMsgs.push({
-          chatId: u.id,
-          from,
-          content: u.lastMessage.content
+  const checkForNewMessages = (updatedChats: Chat[]): MessageNotification[] => {
+    const notifications: MessageNotification[] = [];
+    
+    console.log('ChatTab: Checking for new messages in', updatedChats.length, 'chats');
+    
+    updatedChats.forEach((chat) => {
+      // Skip if no last message
+      if (!chat.lastMessage) {
+        console.log('ChatTab: No last message in chat', chat.id);
+        return;
+      }
+
+      // Skip if message is from current user
+      if (chat.lastMessage.senderId === userProfile.id) {
+        console.log('ChatTab: Message from current user in chat', chat.id, ', skipping');
+        return;
+      }
+
+      // Skip if user is currently in this chat
+      if (!notificationService.shouldShowNotification(chat.id)) {
+        console.log('ChatTab: User is in chat', chat.id, ', skipping notification');
+        return;
+      }
+
+      const messageTime = convertToDate(chat.lastMessage.timestamp);
+      const messageTimestamp = messageTime.getTime();
+
+      // Check if this is a new message using the notification service
+      if (notificationService.isNewMessage(chat.id, messageTimestamp)) {
+        console.log('ChatTab: New message detected in chat', chat.id, 'from', chat.lastMessage.senderId);
+        
+        const otherParticipantId = chat.participants.find((id: any) => id !== userProfile.id);
+        const senderName = chat.participantNames[otherParticipantId] || 'Unknown';
+        
+        notifications.push({
+          chatId: chat.id,
+          senderName,
+          content: chat.lastMessage.content,
+          timestamp: messageTime,
+          senderId: chat.lastMessage.senderId,
         });
+      } else {
+        console.log('ChatTab: Message in chat', chat.id, 'is not new or already processed');
       }
     });
-    return newMsgs;
+    
+    console.log('ChatTab: Found', notifications.length, 'new message notifications');
+    return notifications;
   };
 
   const loadUserProfile = async () => {
     try {
       const profile = await AsyncStorage.getItem('userProfile');
       if (profile) {
-        setUserProfile(JSON.parse(profile));
+        const parsedProfile = JSON.parse(profile);
+        console.log('ChatTab: Loaded user profile:', parsedProfile.id);
+        setUserProfile(parsedProfile);
       }
     } catch (error) {
-      console.error('Error loading profile:', error);
+      console.error('ChatTab: Error loading profile:', error);
     }
   };
 
@@ -195,14 +245,24 @@ export default function ChatTab() {
     if (!userProfile) return;
 
     try {
+      console.log('ChatTab: Loading chats for user:', userProfile.id);
+
       // Load from local SQLite first
       const localChats = await db.getAllChats();
-      
-      // Filter out any inactive chats from local storage
       const activeLocalChats = localChats.filter(chat => chat.isActive !== false);
       
       if (activeLocalChats.length > 0) {
+        console.log('ChatTab: Loaded', activeLocalChats.length, 'chats from local DB');
         setChats(activeLocalChats);
+        
+        // Initialize notification service with existing last message times
+        activeLocalChats.forEach(chat => {
+          if (chat.lastMessage?.timestamp) {
+            const messageTime = convertToDate(chat.lastMessage.timestamp);
+            notificationService.updateLastMessageTime(chat.id, messageTime.getTime());
+          }
+        });
+        
         setLoading(false);
       }
 
@@ -211,10 +271,20 @@ export default function ChatTab() {
         const firestoreChats = await FirestoreService.getUserChats(userProfile.id);
         const activeFirestoreChats = firestoreChats.filter(chat => chat.isActive !== false);
         
+        console.log('ChatTab: Loaded', activeFirestoreChats.length, 'chats from Firestore');
+        
         // Update local database with fresh data
         for (const chat of activeFirestoreChats) {
           await db.saveChat(chat);
         }
+        
+        // Update notification service with current last message times
+        activeFirestoreChats.forEach(chat => {
+          if (chat.lastMessage?.timestamp) {
+            const messageTime = convertToDate(chat.lastMessage.timestamp);
+            notificationService.updateLastMessageTime(chat.id, messageTime.getTime());
+          }
+        });
         
         // Clean up any chats that no longer exist in Firestore
         const firestoreChatIds = new Set(activeFirestoreChats.map(chat => chat.id));
@@ -226,11 +296,10 @@ export default function ChatTab() {
         
         setChats(activeFirestoreChats);
       } catch (firestoreError) {
-        console.error('Firestore error, using local data:', firestoreError);
-        // If Firestore fails, stick with local data
+        console.error('ChatTab: Firestore error, using local data:', firestoreError);
       }
     } catch (error) {
-      console.error('Error loading chats:', error);
+      console.error('ChatTab: Error loading chats:', error);
     } finally {
       setLoading(false);
     }
@@ -238,7 +307,8 @@ export default function ChatTab() {
 
   const onRefresh = async () => {
     setRefreshing(true);
-    firstSubscriptionCall.current = true; // Reset to avoid toast notifications on refresh
+    // Reset notification state to ensure fresh detection
+    notificationService.resetNotificationState();
     await loadChats();
     setRefreshing(false);
   };
@@ -246,14 +316,7 @@ export default function ChatTab() {
   const formatTime = (timestamp: any) => {
     if (!timestamp) return '';
     
-    let date: Date;
-    if (timestamp.toDate) {
-      date = timestamp.toDate();
-    } else if (timestamp instanceof Date) {
-      date = timestamp;
-    } else {
-      date = new Date(timestamp);
-    }
+    const date = convertToDate(timestamp);
 
     const now = new Date();
     const diff = now.getTime() - date.getTime();
@@ -283,7 +346,10 @@ export default function ChatTab() {
     return (
       <TouchableOpacity
         style={styles.chatItem}
-        onPress={() => router.push(`/chat/${item.id}`)}
+        onPress={() => {
+          console.log('ChatTab: Navigating to chat:', item.id);
+          router.push(`/chat/${item.id}`);
+        }}
       >
         <View style={styles.avatarContainer}>
           <View style={styles.avatar}>
@@ -316,6 +382,16 @@ export default function ChatTab() {
     <SafeAreaView style={styles.container}>
       <View style={styles.header}>
         <Text style={styles.title}>Chats</Text>
+        {/* Debug button - remove in production */}
+        <TouchableOpacity 
+          onPress={() => {
+            console.log('ChatTab: Manual notification reset');
+            notificationService.resetNotificationState();
+          }}
+          style={{ padding: 8 }}
+        >
+          <Text style={{ color: Colors.primary, fontSize: 12 }}>Reset</Text>
+        </TouchableOpacity>
       </View>
 
       {loading ? (

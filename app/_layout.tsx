@@ -6,15 +6,14 @@ import { View, ActivityIndicator, Text } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { Colors } from '@/constants/Colors';
 import { DatabaseService } from '@/services/database/sqlite';
-import { initializeUser, getCurrentUserProfile } from '@/services/firebase/config';
+import { initializeUser } from '@/services/firebase/config';
+import Toast from 'react-native-toast-message';
+import { ChatProvider } from '@/contexts/ChatContext';
 
 export default function RootLayout() {
   const [isInitialized, setIsInitialized] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  
-  // Initialize notifications
-  // const { requestPermissions } = useNotifications();
 
   useEffect(() => {
     initializeApp();
@@ -45,43 +44,48 @@ export default function RootLayout() {
 
   return (
     <SafeAreaProvider>
-      {/* Show loading screen during initialization */}
-      {isLoading && (
-        <View style={styles.loadingContainer}>
-          <StatusBar style="light" backgroundColor={Colors.primary} />
-          <ActivityIndicator size="large" color={Colors.textLight} />
-          <Text style={styles.loadingText}>Initializing...</Text>
-        </View>
-      )}
+      <ChatProvider>
+        {/* Show loading screen during initialization */}
+        {isLoading && (
+          <View style={styles.loadingContainer}>
+            <StatusBar style="light" backgroundColor={Colors.primary} />
+            <ActivityIndicator size="large" color={Colors.textLight} />
+            <Text style={styles.loadingText}>Initializing...</Text>
+          </View>
+        )}
 
-      {/* Show error screen if initialization failed */}
-      {error && !isLoading && (
-        <View style={styles.errorContainer}>
-          <StatusBar style="dark" />
-          <Text style={styles.errorTitle}>Initialization Failed</Text>
-          <Text style={styles.errorText}>{error}</Text>
-          <Text style={styles.errorSubtext}>Please restart the app</Text>
-        </View>
-      )}
+        {/* Show error screen if initialization failed */}
+        {error && !isLoading && (
+          <View style={styles.errorContainer}>
+            <StatusBar style="dark" />
+            <Text style={styles.errorTitle}>Initialization Failed</Text>
+            <Text style={styles.errorText}>{error}</Text>
+            <Text style={styles.errorSubtext}>Please restart the app</Text>
+          </View>
+        )}
 
-      {/* Main app navigation */}
-      {!isLoading && !error && (
-        <>
-          <StatusBar style="auto" />
-          <Stack screenOptions={{ headerShown: false }}>
-            <Stack.Screen name="index" />
-            <Stack.Screen name="onboarding" />
-            <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-            <Stack.Screen 
-              name="chat/[id]"
-              options={{
-                presentation: 'card',
-                animation: 'slide_from_right'
-              }}
-            />
-          </Stack>
-        </>
-      )}
+        {/* Main app navigation */}
+        {!isLoading && !error && (
+          <>
+            <StatusBar style="auto" />
+            <Stack screenOptions={{ headerShown: false }}>
+              <Stack.Screen name="index" />
+              <Stack.Screen name="onboarding" />
+              <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+              <Stack.Screen 
+                name="chat/[id]"
+                options={{
+                  presentation: 'card',
+                  animation: 'slide_from_right'
+                }}
+              />
+            </Stack>
+          </>
+        )}
+      </ChatProvider>
+
+      {/* Toast component - must be last and outside of ChatProvider */}
+      <Toast />
     </SafeAreaProvider>
   );
 }
